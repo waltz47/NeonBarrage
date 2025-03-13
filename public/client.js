@@ -54,6 +54,11 @@ canvas.addEventListener("mousedown", (e) => {
 
 let gameState = { players: {}, bullets: [], bots: [] };
 
+let lastFrameTime = performance.now();
+let fps = 0;
+let ping = 0;
+let lastPingTime = 0;
+
 socket.on("update", (state) => {
   gameState = state;
   if (gameState.players[socket.id]) {
@@ -68,12 +73,21 @@ socket.on("update", (state) => {
   }
 });
 
+socket.on("pong", () => {
+  ping = Date.now() - lastPingTime;
+});
+
 socket.on("dead", () => {
   gameStarted = false;
   canvas.style.display = "none";
   alert("You died!");
   location.reload();
 });
+
+function measurePing() {
+  lastPingTime = Date.now();
+  socket.emit("ping");
+}
 
 function updateMovement() {
   if (!gameStarted || gameState.players[socket.id]?.paused) return;
@@ -151,10 +165,40 @@ function draw() {
     ctx.fill();
     ctx.restore();
   });
+
+  // Draw FPS and ping
+  ctx.fillStyle = "rgba(255, 255, 255, 0.8)";
+  ctx.font = "14px Arial";
+  ctx.fillText(`FPS: ${fps}`, 10, 20);
+  ctx.fillText(`Ping: ${ping}ms`, 10, 40);
+
+  // Draw player list
+  ctx.fillStyle = "rgba(0, 0, 0, 0.5)";
+  ctx.fillRect(canvas.width - 200, 0, 200, Object.keys(gameState.players).length * 20 + 10);
+  ctx.fillStyle = "white";
+  let y = 20;
+  for (const id in gameState.players) {
+    const player = gameState.players[id];
+    const status = player.paused ? " (PAUSED)" : "";
+    ctx.fillText(`${player.username}${status}`, canvas.width - 190, y);
+    y += 20;
+  }
 }
 
 function gameLoop() {
   if (!gameStarted) return;
+  
+  // Calculate FPS
+  const now = performance.now();
+  const delta = now - lastFrameTime;
+  fps = Math.round(1000 / delta);
+  lastFrameTime = now;
+
+  // Measure ping every second
+  if (now - lastPingTime > 1000) {
+    measurePing();
+  }
+
   updateMovement();
   draw();
   requestAnimationFrame(gameLoop);

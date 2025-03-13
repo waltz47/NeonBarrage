@@ -293,6 +293,10 @@ io.on("connection", (socket) => {
     gameHeight = dimensions.height;
   });
 
+  socket.on("ping", () => {
+    socket.emit("pong");
+  });
+
   socket.on("disconnect", () => {
     delete gameState.players[socket.id];
     console.log("Player disconnected:", socket.id);
