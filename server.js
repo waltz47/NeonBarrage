@@ -25,6 +25,7 @@ const SEPARATION_WEIGHT = 0.5;
 const ALIGNMENT_WEIGHT = 0.3;
 const COHESION_WEIGHT = 0.3;
 const PURSUIT_WEIGHT = 4.0;
+const GRID_SIZE = 50; // Grid cell size for spatial partitioning (adjust based on bullet size)
 
 let gameWidth = 800;
 let gameHeight = 600;
@@ -42,7 +43,7 @@ function spawnBot() {
     x: Math.random() * gameWidth,
     y: 0,
     angle: Math.PI / 2,
-    color: randomColor(), // Random color for each bot
+    color: randomColor(),
   };
 }
 
@@ -61,6 +62,13 @@ function findNearestPlayer(bot) {
     }
   }
   return closestPlayer;
+}
+
+// Spatial grid helper function
+function getGridKey(x, y) {
+  const gridX = Math.floor(x / GRID_SIZE);
+  const gridY = Math.floor(y / GRID_SIZE);
+  return `${gridX},${gridY}`;
 }
 
 function updateGame() {
@@ -126,7 +134,7 @@ function updateGame() {
       if (angleDiff < -Math.PI) angleDiff += 2 * Math.PI;
       bot.angle += Math.sign(angleDiff) * Math.min(Math.abs(angleDiff), TURN_RATE);
 
-      if (Math.abs(angleDiff) < SHOOT_ANGLE && Math.random() < 0.03) { // Reduced from 0.05
+      if (Math.abs(angleDiff) < SHOOT_ANGLE && Math.random() < 0.03) {
         gameState.bullets.push({
           x: bot.x,
           y: bot.y,
@@ -178,6 +186,51 @@ function updateGame() {
     }
   }
 
+  // Bullet vs Bullet collision with spatial partitioning
+  const grid = {};
+  gameState.bullets.forEach((bullet, index) => {
+    const key = getGridKey(bullet.x, bullet.y);
+    if (!grid[key]) grid[key] = [];
+    grid[key].push({ bullet, index });
+  });
+
+  const playerBullets = [];
+  const aiBullets = [];
+  gameState.bullets.forEach((bullet, index) => {
+    if (gameState.players[bullet.owner]) {
+      playerBullets.push({ bullet, index });
+    } else {
+      aiBullets.push({ bullet, index });
+    }
+  });
+
+  for (let i = playerBullets.length - 1; i >= 0; i--) {
+    const pBullet = playerBullets[i].bullet;
+    const pIndex = playerBullets[i].index;
+    const gridX = Math.floor(pBullet.x / GRID_SIZE);
+    const gridY = Math.floor(pBullet.y / GRID_SIZE);
+
+    // Check current and adjacent grid cells
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dy = -1; dy <= 1; dy++) {
+        const key = `${gridX + dx},${gridY + dy}`;
+        if (!grid[key]) continue;
+        for (const { bullet: aBullet, index: aIndex } of grid[key]) {
+          if (gameState.players[aBullet.owner]) continue; // Skip if both are player bullets
+          const dx = pBullet.x - aBullet.x;
+          const dy = pBullet.y - aBullet.y;
+          if (dx * dx + dy * dy < 36) { // 6^2 (bullet radius 3 + 3)
+            gameState.bullets.splice(Math.max(pIndex, aIndex), 1);
+            gameState.bullets.splice(Math.min(pIndex, aIndex), 1);
+            playerBullets.splice(i, 1);
+            aiBullets.splice(aiBullets.findIndex(b => b.index === aIndex), 1);
+            break; // Bullet destroyed, move to next
+          }
+        }
+      }
+    }
+  }
+
   // Spawn bots with limit
   if (gameState.bots.length < MAX_BOTS && Math.random() < (BOT_SPAWN_RATE * Object.keys(gameState.players).length) / 60) {
     gameState.bots.push(spawnBot());
@@ -200,7 +253,7 @@ io.on("connection", (socket) => {
       username,
       color: "#ADD8E6",
       paused: false,
-      invulnerableUntil: Date.now() + 5000, // 5 seconds invulnerability
+      invulnerableUntil: Date.now() + 5000,
     };
   });
 

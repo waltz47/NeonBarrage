@@ -91,7 +91,7 @@ function updateMovement() {
 }
 
 function draw() {
-  ctx.fillStyle = "#000000"; // Solid black background
+  ctx.fillStyle = "#000000";
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
   if (gameState.players[socket.id]) {
@@ -142,7 +142,7 @@ function draw() {
     ctx.save();
     ctx.translate(b.x, b.y);
     ctx.rotate(b.angle);
-    ctx.fillStyle = b.color; // Random color from server
+    ctx.fillStyle = b.color;
     ctx.beginPath();
     ctx.moveTo(15, 0);
     ctx.lineTo(-10, 10);
