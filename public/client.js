@@ -55,6 +55,21 @@ canvas.addEventListener("mousedown", (e) => {
 let gameState = { players: {}, bullets: [], bots: [] };
 let particles = [];
 
+// Add these after the gameState declaration
+let backgroundParticles = [];
+const BACKGROUND_PARTICLE_COUNT = 50;
+
+// Initialize background particles
+for (let i = 0; i < BACKGROUND_PARTICLE_COUNT; i++) {
+  backgroundParticles.push({
+    x: Math.random() * canvas.width,
+    y: Math.random() * canvas.height,
+    size: Math.random() * 2 + 1,
+    speed: Math.random() * 0.5 + 0.2,
+    color: `rgba(${Math.random() * 100 + 155}, ${Math.random() * 100 + 155}, 255, 0.5)`
+  });
+}
+
 let lastFrameTime = performance.now();
 let fps = 0;
 let ping = 0;
@@ -135,6 +150,33 @@ function updateMovement() {
 function draw() {
   // Dark background with gradient
   ctx.fillStyle = '#0a0a15';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  // Draw background effects
+  ctx.fillStyle = '#0a0a15';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  // Update and draw background particles
+  backgroundParticles.forEach(p => {
+    p.y += p.speed;
+    if (p.y > canvas.height) {
+      p.y = 0;
+      p.x = Math.random() * canvas.width;
+    }
+    ctx.fillStyle = p.color;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+    ctx.fill();
+  });
+
+  // Add a subtle gradient overlay
+  const gradient = ctx.createRadialGradient(
+    canvas.width/2, canvas.height/2, 0,
+    canvas.width/2, canvas.height/2, canvas.width/2
+  );
+  gradient.addColorStop(0, 'rgba(0,20,40,0)');
+  gradient.addColorStop(1, 'rgba(0,20,40,0.3)');
+  ctx.fillStyle = gradient;
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
   // Draw particles with reduced glow
@@ -249,11 +291,10 @@ function draw() {
     const player = gameState.players[socket.id];
     const upgradeTexts = [
       "No upgrade",
-      "Rapid Fire",
-      "Double Shot",
+      "Twin Shot",
       "Triple Shot"
     ];
-    const upgradeText = upgradeTexts[player.upgrade] || upgradeTexts[3];
+    const upgradeText = upgradeTexts[player.upgrade] || upgradeTexts[2];
     ctx.fillText(`Upgrade: ${upgradeText}`, 10, 60);
     ctx.fillText(`Kills to next: ${50 - (player.score % 50)}`, 10, 80);
   }

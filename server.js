@@ -33,6 +33,10 @@ const BOT_FIRE_RATE = 0.01; // Reduced from 0.03
 const BOT_FIRE_COOLDOWN = 1000; // Minimum 1 second between shots
 const MIN_SPAWN_DISTANCE = 500; // Increased from 300
 const BOT_SPAWN_RATE_INCREASE = 0.5; // Additional spawn rate per player upgrade level
+const BULLET_HOMING_STRENGTH = 0.02; // Reduced from 0.04 for even smoother turning
+const BULLET_HOMING_RANGE = 800; // Increased from 400 for much longer range detection
+const DIFFICULTY_DECREASE_ON_DEATH = 1;
+const MIN_DIFFICULTY = 1;
 let difficultyLevel = 1;
 let gameStartTime = Date.now();
 
@@ -151,16 +155,96 @@ function getGridKey(x, y) {
   return `${gridX},${gridY}`;
 }
 
+// Add helper function for bullet homing
+function findNearestTarget(bullet, grid) {
+  const gridX = Math.floor(bullet.x / GRID_SIZE);
+  const gridY = Math.floor(bullet.y / GRID_SIZE);
+  let nearestDist = BULLET_HOMING_RANGE * BULLET_HOMING_RANGE;
+  let nearestTarget = null;
+
+  // Expand grid search radius further
+  for (let dx = -3; dx <= 3; dx++) {  // Increased from -2/+2 to -3/+3
+    for (let dy = -3; dy <= 3; dy++) {
+      const key = `${gridX + dx},${gridY + dy}`;
+      if (!grid[key]) continue;
+
+      for (const { bullet: target } of grid[key]) {
+        if (target === bullet) continue;
+        if (gameState.players[bullet.owner] && gameState.players[target.owner]) continue;
+        if (!gameState.players[bullet.owner] && !gameState.players[target.owner]) continue;
+
+        const dx = target.x - bullet.x;
+        const dy = target.y - target.y;
+        const distSq = dx * dx + dy * dy;
+        if (distSq < nearestDist) {
+          nearestDist = distSq;
+          nearestTarget = target;
+        }
+      }
+    }
+  }
+  return nearestTarget;
+}
+
+// Replace the adjustDifficulty function with this optimized version
+function adjustDifficulty() {
+  const playerCount = Object.keys(gameState.players).length;
+  if (playerCount === 0) {
+    difficultyLevel = MIN_DIFFICULTY;
+    return MIN_DIFFICULTY;
+  }
+
+  // Calculate time-based difficulty, cached to avoid frequent calculations
+  const timeSinceStart = Date.now() - gameStartTime;
+  const timeBasedDifficulty = Math.floor(timeSinceStart / DIFFICULTY_INCREASE_INTERVAL);
+  
+  // Calculate new difficulty level
+  return Math.max(
+    MIN_DIFFICULTY,
+    Math.min(timeBasedDifficulty, Math.ceil(playerCount * 1.5))
+  );
+}
+
 function updateGame() {
   const now = Date.now();
 
   // Move bullets and clean up
+  const grid = {};
+  gameState.bullets.forEach((bullet, index) => {
+    const key = getGridKey(bullet.x, bullet.y);
+    if (!grid[key]) grid[key] = [];
+    grid[key].push({ bullet, index });
+  });
+
   for (let i = gameState.bullets.length - 1; i >= 0; i--) {
     const bullet = gameState.bullets[i];
-    const speed = bullet.speed || BULLET_SPEED; // Use specific speed or default
+    const speed = bullet.speed || BULLET_SPEED;
+
+    // Only apply homing to player bullets
+    if (gameState.players[bullet.owner]) {
+      const target = findNearestTarget(bullet, grid);
+      
+      if (target) {
+        const dx = target.x - bullet.x;
+        const dy = target.y - bullet.y;
+        const desiredAngle = Math.atan2(dy, dx);
+        
+        let angleDiff = desiredAngle - bullet.angle;
+        if (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
+        if (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
+        
+        bullet.angle += Math.sign(angleDiff) * 
+                       Math.min(Math.abs(angleDiff), BULLET_HOMING_STRENGTH);
+      }
+    }
+
+    // Move bullet
     bullet.x += Math.cos(bullet.angle) * speed;
     bullet.y += Math.sin(bullet.angle) * speed;
-    if (bullet.x < 0 || bullet.x > gameWidth || bullet.y < 0 || bullet.y > gameHeight) {
+
+    // Remove if out of bounds
+    if (bullet.x < 0 || bullet.x > gameWidth || 
+        bullet.y < 0 || bullet.y > gameHeight) {
       gameState.bullets.splice(i, 1);
     }
   }
@@ -243,7 +327,7 @@ function updateGame() {
       const bot = gameState.bots[j];
       const dx = bot.x - bullet.x;
       const dy = bot.y - bullet.y;
-      if (dx * dx + dy * dy < 225) {
+      if (dx * dx + dy * dy < 400) { // Increased from 225 (15^2 -> 20^2)
         if (!gameState.bots.some(b => b.id === bullet.owner)) {
           const botColor = bot.color;
           gameState.bots.splice(j, 1);
@@ -275,7 +359,7 @@ function updateGame() {
       if (gameState.players[bullet.owner]) continue;
       const dx = player.x - bullet.x;
       const dy = player.y - bullet.y;
-      if (dx * dx + dy * dy < 225) {
+      if (dx * dx + dy * dy < 400) { // Increased from 225 to match bot collision size
         io.emit("explosion", { 
           x: player.x, 
           y: player.y, 
@@ -290,13 +374,6 @@ function updateGame() {
   }
 
   // Bullet vs Bullet collision with spatial partitioning
-  const grid = {};
-  gameState.bullets.forEach((bullet, index) => {
-    const key = getGridKey(bullet.x, bullet.y);
-    if (!grid[key]) grid[key] = [];
-    grid[key].push({ bullet, index });
-  });
-
   const playerBullets = [];
   const aiBullets = [];
   gameState.bullets.forEach((bullet, index) => {
@@ -322,7 +399,7 @@ function updateGame() {
           if (gameState.players[aBullet.owner]) continue; // Skip if both are player bullets
           const dx = pBullet.x - aBullet.x;
           const dy = pBullet.y - aBullet.y;
-          if (dx * dx + dy * dy < 64) { // 8^2 (bullet radius 4 + 4)
+          if (dx * dx + dy * dy < 144) { // Increased from 64 (8^2 -> 12^2)
             gameState.bullets.splice(Math.max(pIndex, aIndex), 1);
             gameState.bullets.splice(Math.min(pIndex, aIndex), 1);
             io.emit("explosion", { 
@@ -340,22 +417,30 @@ function updateGame() {
     }
   }
 
-  // Spawn bots with limit
-  const timeSinceStart = Date.now() - gameStartTime;
-  const currentMaxBots = Math.min(MAX_BOTS + (Math.floor(timeSinceStart / DIFFICULTY_INCREASE_INTERVAL) * DIFFICULTY_BOT_INCREMENT), 30);
+  // Spawn bots with limit (calculate difficulty only when needed)
+  if (gameState.bots.length < MAX_BOTS) {
+    const currentDifficulty = adjustDifficulty();
+    const currentMaxBots = Math.min(
+      MAX_BOTS + (currentDifficulty * DIFFICULTY_BOT_INCREMENT), 
+      30
+    );
 
-  if (gameState.bots.length < currentMaxBots) {
-    // Calculate average upgrade level of all players
-    const players = Object.values(gameState.players);
-    const totalUpgrades = players.reduce((sum, p) => sum + p.upgrade, 0);
-    const avgUpgradeLevel = players.length > 0 ? totalUpgrades / players.length : 0;
-    
-    // Increase spawn rate based on average upgrade level
-    const adjustedSpawnRate = BOT_SPAWN_RATE + (avgUpgradeLevel * BOT_SPAWN_RATE_INCREASE);
-    
-    if (Math.random() < (adjustedSpawnRate * players.length) / 60) {
-      const bot = spawnBot();
-      if (bot) gameState.bots.push(bot);
+    if (gameState.bots.length < currentMaxBots) {
+      const players = Object.values(gameState.players);
+      // Only calculate average upgrade if we might spawn a bot
+      if (Math.random() < BOT_SPAWN_RATE * players.length / 60) {
+        const avgUpgradeLevel = players.length > 0 
+          ? players.reduce((sum, p) => sum + p.upgrade, 0) / players.length 
+          : 0;
+        
+        const adjustedSpawnRate = (BOT_SPAWN_RATE + (avgUpgradeLevel * BOT_SPAWN_RATE_INCREASE)) 
+                                 * (players.length / Math.max(1, currentDifficulty));
+        
+        if (Math.random() < adjustedSpawnRate) {
+          const bot = spawnBot();
+          if (bot) gameState.bots.push(bot);
+        }
+      }
     }
   }
 
@@ -367,8 +452,8 @@ setInterval(updateGame, 1000 / 60); // Restore to 60 FPS
 io.on("connection", (socket) => {
   console.log("Player connected:", socket.id);
 
-  const PLAYER_SHOOT_COOLDOWN = 150; // Reduced from 250
-  const UPGRADED_SHOOT_COOLDOWN = 100; // Reduced from 150
+  const PLAYER_SHOOT_COOLDOWN = 100; // Reduced from 250
+  const UPGRADED_SHOOT_COOLDOWN = 50; // Reduced from 150
 
   socket.on("login", (username) => {
     const colorIndex = Object.keys(gameState.players).length % PLAYER_COLORS.length;
@@ -421,13 +506,13 @@ io.on("connection", (socket) => {
     });
 
     // Add bullets based on upgrade level
-    if (player.upgrade >= 3) { // 150+ kills: triple shot
+    if (player.upgrade >= 2) { // 100+ kills: triple shot
       gameState.bullets.push(
         createBullet(-0.2),
         createBullet(),
         createBullet(0.2)
       );
-    } else if (player.upgrade >= 2) { // 100+ kills: double shot
+    } else if (player.upgrade >= 1) { // 50+ kills: twin shot
       gameState.bullets.push(
         createBullet(-0.1),
         createBullet(0.1)
@@ -456,6 +541,9 @@ io.on("connection", (socket) => {
   socket.on("disconnect", () => {
     delete gameState.players[socket.id];
     console.log("Player disconnected:", socket.id);
+    // Decrease difficulty when a player dies/disconnects
+    difficultyLevel = Math.max(MIN_DIFFICULTY, difficultyLevel - DIFFICULTY_DECREASE_ON_DEATH);
+    adjustDifficulty();
   });
 });
 
