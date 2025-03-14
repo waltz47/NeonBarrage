@@ -74,8 +74,11 @@ socket.on("update", (state) => {
   }
 });
 
+// Replace the ping event handler
 socket.on("pong", () => {
   ping = Date.now() - lastPingTime;
+  lastPingTime = Date.now(); // Reset for next ping
+  socket.emit("ping"); // Immediately request next ping
 });
 
 socket.on("dead", () => {
@@ -86,22 +89,29 @@ socket.on("dead", () => {
 });
 
 socket.on("explosion", (pos) => {
-  for (let i = 0; i < 20; i++) {
+  const colors = pos.color.split(',').map(c => c.trim());
+  const particleCount = pos.size || 20;
+  
+  for (let i = 0; i < particleCount; i++) {
     const angle = Math.random() * Math.PI * 2;
-    const speed = Math.random() * 3 + 1;
-    const size = Math.random() * 3 + 1;
+    const speed = Math.random() * 4 + 2;
+    const size = Math.random() * 4 + 2;
+    const color = colors[Math.floor(Math.random() * colors.length)];
+    
     particles.push({
       x: pos.x,
       y: pos.y,
       vx: Math.cos(angle) * speed,
       vy: Math.sin(angle) * speed,
-      color: pos.color || "255, 255, 255",
-      life: 50,
-      size: size
+      color: color.replace('#', ''),
+      life: 60,
+      size: size,
+      alpha: 1
     });
   }
 });
 
+// Replace measurePing function
 function measurePing() {
   lastPingTime = Date.now();
   socket.emit("ping");
@@ -132,8 +142,18 @@ function draw() {
     p.life--;
     p.x += p.vx;
     p.y += p.vy;
-    ctx.fillStyle = `rgba(${p.color}, ${p.life / 50})`;
-    ctx.fillRect(p.x, p.y, p.size, p.size);
+    p.vx *= 0.98; // Add friction
+    p.vy *= 0.98;
+    p.alpha = p.life / 60;
+    
+    ctx.shadowBlur = 15;
+    ctx.shadowColor = `#${p.color}`;
+    ctx.fillStyle = `#${p.color}`;
+    ctx.globalAlpha = p.alpha;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = 1;
     if (p.life <= 0) particles.splice(i, 1);
   });
 
@@ -224,36 +244,64 @@ function draw() {
   ctx.fillText(`FPS: ${fps}`, 10, 20);
   ctx.fillText(`Ping: ${ping}ms`, 10, 40);
 
+  // Add upgrade status
+  if (gameState.players[socket.id]) {
+    const player = gameState.players[socket.id];
+    const upgradeTexts = [
+      "No upgrade",
+      "Rapid Fire",
+      "Double Shot",
+      "Triple Shot"
+    ];
+    const upgradeText = upgradeTexts[player.upgrade] || upgradeTexts[3];
+    ctx.fillText(`Upgrade: ${upgradeText}`, 10, 60);
+    ctx.fillText(`Kills to next: ${50 - (player.score % 50)}`, 10, 80);
+  }
+
+  // Replace the player list drawing code with this scoreboard
   // Draw player list
   ctx.fillStyle = "rgba(0, 10, 30, 0.7)";
-  ctx.fillRect(canvas.width - 200, 0, 200, Object.keys(gameState.players).length * 20 + 10);
-  let y = 20;
-  for (const id in gameState.players) {
-    const player = gameState.players[id];
+  ctx.fillRect(canvas.width - 200, 0, 200, Object.keys(gameState.players).length * 20 + 30);
+
+  // Draw scoreboard header
+  ctx.fillStyle = "#ffffff";
+  ctx.font = "bold 14px Arial";
+  ctx.fillText("SCOREBOARD", canvas.width - 190, 20);
+
+  // Draw player scores
+  let y = 40;
+  const sortedPlayers = Object.values(gameState.players)
+    .sort((a, b) => b.score - a.score);
+
+  for (const player of sortedPlayers) {
     const status = player.paused ? " (PAUSED)" : "";
     ctx.fillStyle = player.color;
-    ctx.fillText(`${player.username}${status}`, canvas.width - 190, y);
+    ctx.font = "14px Arial";
+    ctx.fillText(
+      `${player.username}${status}: ${player.score}`, 
+      canvas.width - 190, 
+      y
+    );
     y += 20;
   }
 }
 
+// Replace gameLoop function
 function gameLoop() {
   if (!gameStarted) return;
   
-  // Calculate FPS
   const now = performance.now();
   const delta = now - lastFrameTime;
   fps = Math.round(1000 / delta);
   lastFrameTime = now;
 
-  // Measure ping every second
-  if (now - lastPingTime > 1000) {
-    measurePing();
-  }
-
+  // Remove ping measurement from here since it's now continuous
   updateMovement();
   draw();
   requestAnimationFrame(gameLoop);
 }
+
+// Add this after gameState declaration
+socket.emit("ping"); // Initial ping measurement when game starts
 
 canvas.setAttribute("tabindex", "0");

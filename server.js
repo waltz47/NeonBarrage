@@ -15,7 +15,8 @@ const gameState = {
 };
 
 const BOT_SPAWN_RATE = 2;
-const BULLET_SPEED = 5;
+const BULLET_SPEED = 5; // Base bullet speed for bots
+const PLAYER_BULLET_SPEED = 6.5; // Slightly faster for players
 const BOT_SPEED = 2;
 const TURN_RATE = 0.1;
 const SHOOT_ANGLE = Math.PI / 6;
@@ -28,11 +29,27 @@ const PURSUIT_WEIGHT = 4.0;
 const GRID_SIZE = 50; // Grid cell size for spatial partitioning (adjust based on bullet size)
 const DIFFICULTY_INCREASE_INTERVAL = 30000; // 30 seconds
 const DIFFICULTY_BOT_INCREMENT = 2;
+const BOT_FIRE_RATE = 0.01; // Reduced from 0.03
+const BOT_FIRE_COOLDOWN = 1000; // Minimum 1 second between shots
+const MIN_SPAWN_DISTANCE = 500; // Increased from 300
+const BOT_SPAWN_RATE_INCREASE = 0.5; // Additional spawn rate per player upgrade level
 let difficultyLevel = 1;
 let gameStartTime = Date.now();
 
 let gameWidth = 800;
 let gameHeight = 600;
+
+// Add neon color palette
+const NEON_PALETTE = {
+  red: '#ff1744',
+  pink: '#f50057',
+  purple: '#d500f9',
+  blue: '#2979ff',
+  cyan: '#00e5ff',
+  green: '#00e676',
+  yellow: '#ffea00',
+  orange: '#ff9100'
+};
 
 // Replace randomColor function
 function randomColor() {
@@ -54,13 +71,59 @@ const PLAYER_COLORS = [
   "#0099ff", // Bright Blue
 ];
 
+function findSafeSpawnPoint() {
+  const edge = Math.floor(Math.random() * 4); // 0: top, 1: right, 2: bottom, 3: left
+  let x, y;
+
+  switch(edge) {
+    case 0: // top
+      x = Math.random() * gameWidth;
+      y = 0;
+      break;
+    case 1: // right
+      x = gameWidth;
+      y = Math.random() * gameHeight;
+      break;
+    case 2: // bottom
+      x = Math.random() * gameWidth;
+      y = gameHeight;
+      break;
+    case 3: // left
+      x = 0;
+      y = Math.random() * gameHeight;
+      break;
+  }
+
+  // Check distance from all players
+  for (const id in gameState.players) {
+    const player = gameState.players[id];
+    const dx = player.x - x;
+    const dy = player.y - y;
+    if (dx * dx + dy * dy < MIN_SPAWN_DISTANCE * MIN_SPAWN_DISTANCE) {
+      return null; // Too close to a player
+    }
+  }
+
+  return { x, y, angle: Math.atan2(gameHeight/2 - y, gameWidth/2 - x) };
+}
+
 function spawnBot() {
+  let spawnPoint;
+  for (let attempts = 0; attempts < 10; attempts++) {
+    spawnPoint = findSafeSpawnPoint();
+    if (spawnPoint) break;
+  }
+
+  // If no safe point found after attempts, don't spawn
+  if (!spawnPoint) return null;
+
   return {
     id: Math.random().toString(36).substr(2, 9),
-    x: Math.random() * gameWidth,
-    y: 0,
-    angle: Math.PI / 2,
+    x: spawnPoint.x,
+    y: spawnPoint.y,
+    angle: spawnPoint.angle,
     color: randomColor(),
+    lastShot: 0
   };
 }
 
@@ -94,8 +157,9 @@ function updateGame() {
   // Move bullets and clean up
   for (let i = gameState.bullets.length - 1; i >= 0; i--) {
     const bullet = gameState.bullets[i];
-    bullet.x += Math.cos(bullet.angle) * BULLET_SPEED;
-    bullet.y += Math.sin(bullet.angle) * BULLET_SPEED;
+    const speed = bullet.speed || BULLET_SPEED; // Use specific speed or default
+    bullet.x += Math.cos(bullet.angle) * speed;
+    bullet.y += Math.sin(bullet.angle) * speed;
     if (bullet.x < 0 || bullet.x > gameWidth || bullet.y < 0 || bullet.y > gameHeight) {
       gameState.bullets.splice(i, 1);
     }
@@ -151,7 +215,9 @@ function updateGame() {
       if (angleDiff < -Math.PI) angleDiff += 2 * Math.PI;
       bot.angle += Math.sign(angleDiff) * Math.min(Math.abs(angleDiff), TURN_RATE);
 
-      if (Math.abs(angleDiff) < SHOOT_ANGLE && Math.random() < 0.03) {
+      if (Math.abs(angleDiff) < SHOOT_ANGLE && 
+          now - bot.lastShot > BOT_FIRE_COOLDOWN && 
+          Math.random() < BOT_FIRE_RATE) {
         gameState.bullets.push({
           x: bot.x,
           y: bot.y,
@@ -159,6 +225,7 @@ function updateGame() {
           color: "#FF0000",
           owner: bot.id,
         });
+        bot.lastShot = now;
       }
     }
 
@@ -178,8 +245,21 @@ function updateGame() {
       const dy = bot.y - bullet.y;
       if (dx * dx + dy * dy < 225) {
         if (!gameState.bots.some(b => b.id === bullet.owner)) {
+          const botColor = bot.color;
           gameState.bots.splice(j, 1);
           gameState.bullets.splice(i, 1);
+          
+          // Add score for the player who killed the bot
+          if (gameState.players[bullet.owner]) {
+            gameState.players[bullet.owner].score++;
+          }
+          
+          io.emit("explosion", { 
+            x: bot.x, 
+            y: bot.y, 
+            color: `${NEON_PALETTE.orange}, ${NEON_PALETTE.red}, ${NEON_PALETTE.yellow}`,
+            size: 30
+          });
           break;
         }
       }
@@ -196,6 +276,12 @@ function updateGame() {
       const dx = player.x - bullet.x;
       const dy = player.y - bullet.y;
       if (dx * dx + dy * dy < 225) {
+        io.emit("explosion", { 
+          x: player.x, 
+          y: player.y, 
+          color: `${NEON_PALETTE.blue}, ${NEON_PALETTE.cyan}, ${NEON_PALETTE.purple}`,
+          size: 40
+        });
         delete gameState.players[id];
         io.to(id).emit("dead");
         gameState.bullets.splice(i, 1);
@@ -239,7 +325,12 @@ function updateGame() {
           if (dx * dx + dy * dy < 64) { // 8^2 (bullet radius 4 + 4)
             gameState.bullets.splice(Math.max(pIndex, aIndex), 1);
             gameState.bullets.splice(Math.min(pIndex, aIndex), 1);
-            io.emit("explosion", { x: pBullet.x, y: pBullet.y });
+            io.emit("explosion", { 
+              x: pBullet.x, 
+              y: pBullet.y,
+              color: `255, 255, 255`, // Revert to simple white explosion
+              size: 15
+            });
             playerBullets.splice(i, 1);
             aiBullets.splice(aiBullets.findIndex(b => b.index === aIndex), 1);
             break; // Bullet destroyed, move to next
@@ -253,8 +344,19 @@ function updateGame() {
   const timeSinceStart = Date.now() - gameStartTime;
   const currentMaxBots = Math.min(MAX_BOTS + (Math.floor(timeSinceStart / DIFFICULTY_INCREASE_INTERVAL) * DIFFICULTY_BOT_INCREMENT), 30);
 
-  if (gameState.bots.length < currentMaxBots && Math.random() < (BOT_SPAWN_RATE * Object.keys(gameState.players).length) / 60) {
-    gameState.bots.push(spawnBot());
+  if (gameState.bots.length < currentMaxBots) {
+    // Calculate average upgrade level of all players
+    const players = Object.values(gameState.players);
+    const totalUpgrades = players.reduce((sum, p) => sum + p.upgrade, 0);
+    const avgUpgradeLevel = players.length > 0 ? totalUpgrades / players.length : 0;
+    
+    // Increase spawn rate based on average upgrade level
+    const adjustedSpawnRate = BOT_SPAWN_RATE + (avgUpgradeLevel * BOT_SPAWN_RATE_INCREASE);
+    
+    if (Math.random() < (adjustedSpawnRate * players.length) / 60) {
+      const bot = spawnBot();
+      if (bot) gameState.bots.push(bot);
+    }
   }
 
   io.emit("update", gameState);
@@ -264,6 +366,9 @@ setInterval(updateGame, 1000 / 60); // Restore to 60 FPS
 
 io.on("connection", (socket) => {
   console.log("Player connected:", socket.id);
+
+  const PLAYER_SHOOT_COOLDOWN = 150; // Reduced from 250
+  const UPGRADED_SHOOT_COOLDOWN = 100; // Reduced from 150
 
   socket.on("login", (username) => {
     const colorIndex = Object.keys(gameState.players).length % PLAYER_COLORS.length;
@@ -276,6 +381,9 @@ io.on("connection", (socket) => {
       color: PLAYER_COLORS[colorIndex],
       paused: false,
       invulnerableUntil: Date.now() + 5000,
+      score: 0,
+      lastShot: 0,
+      upgrade: 0 // Track upgrade level: 0=normal, 1=fast, 2=double, 3=triple
     };
   });
 
@@ -294,15 +402,41 @@ io.on("connection", (socket) => {
 
   socket.on("shoot", () => {
     const player = gameState.players[socket.id];
-    if (player && !player.paused) {
-      gameState.bullets.push({
-        x: player.x,
-        y: player.y,
-        angle: player.angle,
-        color: player.color, // Use player color for bullets
-        owner: player.id,
-      });
+    if (!player || player.paused) return;
+
+    const now = Date.now();
+    const cooldown = player.upgrade >= 1 ? UPGRADED_SHOOT_COOLDOWN : PLAYER_SHOOT_COOLDOWN;
+    if (now - player.lastShot < cooldown) return;
+
+    // Update player's upgrade based on score
+    player.upgrade = Math.floor(player.score / 50);
+
+    const createBullet = (angleOffset = 0) => ({
+      x: player.x,
+      y: player.y,
+      angle: player.angle + angleOffset,
+      color: player.color,
+      owner: player.id,
+      speed: PLAYER_BULLET_SPEED
+    });
+
+    // Add bullets based on upgrade level
+    if (player.upgrade >= 3) { // 150+ kills: triple shot
+      gameState.bullets.push(
+        createBullet(-0.2),
+        createBullet(),
+        createBullet(0.2)
+      );
+    } else if (player.upgrade >= 2) { // 100+ kills: double shot
+      gameState.bullets.push(
+        createBullet(-0.1),
+        createBullet(0.1)
+      );
+    } else { // Single shot
+      gameState.bullets.push(createBullet());
     }
+
+    player.lastShot = now;
   });
 
   socket.on("pause", (paused) => {
