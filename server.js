@@ -26,16 +26,33 @@ const ALIGNMENT_WEIGHT = 0.3;
 const COHESION_WEIGHT = 0.3;
 const PURSUIT_WEIGHT = 4.0;
 const GRID_SIZE = 50; // Grid cell size for spatial partitioning (adjust based on bullet size)
+const DIFFICULTY_INCREASE_INTERVAL = 30000; // 30 seconds
+const DIFFICULTY_BOT_INCREMENT = 2;
+let difficultyLevel = 1;
+let gameStartTime = Date.now();
 
 let gameWidth = 800;
 let gameHeight = 600;
 
+// Replace randomColor function
 function randomColor() {
-  const r = Math.floor(Math.random() * 256).toString(16).padStart(2, "0");
-  const g = Math.floor(Math.random() * 256).toString(16).padStart(2, "0");
-  const b = Math.floor(Math.random() * 256).toString(16).padStart(2, "0");
-  return `#${r}${g}${b}`;
+  const botColors = [
+    "#ff0000", // Red
+    "#ff3300", // Orange-Red
+    "#ff6600", // Orange
+    "#ff9900", // Dark Orange
+  ];
+  return botColors[Math.floor(Math.random() * botColors.length)];
 }
+
+const PLAYER_COLORS = [
+  "#00ffff", // Cyan
+  "#00ff99", // Spring Green
+  "#33ff33", // Lime
+  "#99ff00", // Yellow-Green
+  "#00ccff", // Sky Blue
+  "#0099ff", // Bright Blue
+];
 
 function spawnBot() {
   return {
@@ -219,9 +236,10 @@ function updateGame() {
           if (gameState.players[aBullet.owner]) continue; // Skip if both are player bullets
           const dx = pBullet.x - aBullet.x;
           const dy = pBullet.y - aBullet.y;
-          if (dx * dx + dy * dy < 36) { // 6^2 (bullet radius 3 + 3)
+          if (dx * dx + dy * dy < 64) { // 8^2 (bullet radius 4 + 4)
             gameState.bullets.splice(Math.max(pIndex, aIndex), 1);
             gameState.bullets.splice(Math.min(pIndex, aIndex), 1);
+            io.emit("explosion", { x: pBullet.x, y: pBullet.y });
             playerBullets.splice(i, 1);
             aiBullets.splice(aiBullets.findIndex(b => b.index === aIndex), 1);
             break; // Bullet destroyed, move to next
@@ -232,26 +250,30 @@ function updateGame() {
   }
 
   // Spawn bots with limit
-  if (gameState.bots.length < MAX_BOTS && Math.random() < (BOT_SPAWN_RATE * Object.keys(gameState.players).length) / 60) {
+  const timeSinceStart = Date.now() - gameStartTime;
+  const currentMaxBots = Math.min(MAX_BOTS + (Math.floor(timeSinceStart / DIFFICULTY_INCREASE_INTERVAL) * DIFFICULTY_BOT_INCREMENT), 30);
+
+  if (gameState.bots.length < currentMaxBots && Math.random() < (BOT_SPAWN_RATE * Object.keys(gameState.players).length) / 60) {
     gameState.bots.push(spawnBot());
   }
 
   io.emit("update", gameState);
 }
 
-setInterval(updateGame, 1000 / 60);
+setInterval(updateGame, 1000 / 60); // Restore to 60 FPS
 
 io.on("connection", (socket) => {
   console.log("Player connected:", socket.id);
 
   socket.on("login", (username) => {
+    const colorIndex = Object.keys(gameState.players).length % PLAYER_COLORS.length;
     gameState.players[socket.id] = {
       id: socket.id,
       x: gameWidth / 2,
       y: gameHeight / 2,
       angle: 0,
       username,
-      color: "#ADD8E6",
+      color: PLAYER_COLORS[colorIndex],
       paused: false,
       invulnerableUntil: Date.now() + 5000,
     };
@@ -277,7 +299,7 @@ io.on("connection", (socket) => {
         x: player.x,
         y: player.y,
         angle: player.angle,
-        color: "#FFFFFF",
+        color: player.color, // Use player color for bullets
         owner: player.id,
       });
     }

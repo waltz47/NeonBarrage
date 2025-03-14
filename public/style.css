@@ -4,12 +4,13 @@ body {
   justify-content: center;
   align-items: center;
   height: 100vh;
-  background: #111;
+  background: linear-gradient(135deg, #0a0a15 0%, #000005 100%);
+  color: #fff;
 }
 
 #gameCanvas {
   display: none;
-  background: #222;
+  box-shadow: 0 0 50px rgba(0, 255, 255, 0.2);
 }
 
 #login {
@@ -18,15 +19,39 @@ body {
   left: 50%;
   transform: translate(-50%, -50%);
   text-align: center;
+  padding: 30px;
+  background: rgba(0, 10, 30, 0.7);
+  border-radius: 10px;
+  box-shadow: 0 0 20px rgba(0, 255, 255, 0.3);
 }
 
 #username {
   padding: 10px;
   font-size: 16px;
+  background: rgba(0, 20, 40, 0.5);
+  border: 1px solid #00ffff;
+  color: #fff;
+  border-radius: 5px;
+  outline: none;
+}
+
+#username:focus {
+  box-shadow: 0 0 10px rgba(0, 255, 255, 0.5);
 }
 
 button {
   padding: 10px 20px;
   font-size: 16px;
   margin-top: 10px;
+  background: #00ffff;
+  color: #000;
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+button:hover {
+  background: #fff;
+  box-shadow: 0 0 20px rgba(0, 255, 255, 0.5);
 }

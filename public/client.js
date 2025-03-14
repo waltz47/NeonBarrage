@@ -53,6 +53,7 @@ canvas.addEventListener("mousedown", (e) => {
 });
 
 let gameState = { players: {}, bullets: [], bots: [] };
+let particles = [];
 
 let lastFrameTime = performance.now();
 let fps = 0;
@@ -84,6 +85,23 @@ socket.on("dead", () => {
   location.reload();
 });
 
+socket.on("explosion", (pos) => {
+  for (let i = 0; i < 20; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const speed = Math.random() * 3 + 1;
+    const size = Math.random() * 3 + 1;
+    particles.push({
+      x: pos.x,
+      y: pos.y,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed,
+      color: pos.color || "255, 255, 255",
+      life: 50,
+      size: size
+    });
+  }
+});
+
 function measurePing() {
   lastPingTime = Date.now();
   socket.emit("ping");
@@ -105,81 +123,115 @@ function updateMovement() {
 }
 
 function draw() {
-  ctx.fillStyle = "#000000";
+  // Dark background with gradient
+  ctx.fillStyle = '#0a0a15';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
+  // Draw particles with reduced glow
+  particles.forEach((p, i) => {
+    p.life--;
+    p.x += p.vx;
+    p.y += p.vy;
+    ctx.fillStyle = `rgba(${p.color}, ${p.life / 50})`;
+    ctx.fillRect(p.x, p.y, p.size, p.size);
+    if (p.life <= 0) particles.splice(i, 1);
+  });
+
+  // Draw local player
   if (gameState.players[socket.id]) {
     const p = gameState.players[socket.id];
     ctx.save();
     ctx.translate(localPlayer.x, localPlayer.y);
     ctx.rotate(localPlayer.angle);
-    ctx.fillStyle = p.paused ? "#808080" : p.color;
+    
+    // Add glow effect only for local player
+    ctx.shadowBlur = 10;
+    ctx.shadowColor = p.color;
+    
+    ctx.fillStyle = p.paused ? "#404040" : p.color;
+    ctx.strokeStyle = "#ffffff";
+    ctx.lineWidth = 2;
     ctx.beginPath();
     ctx.moveTo(15, 0);
     ctx.lineTo(-10, 10);
     ctx.lineTo(-10, -10);
     ctx.closePath();
     ctx.fill();
+    ctx.stroke();
     ctx.restore();
-    ctx.fillStyle = "#FFFFFF";
+
+    ctx.fillStyle = "#ffffff";
     ctx.font = "12px Arial";
     ctx.fillText(p.username, localPlayer.x - ctx.measureText(p.username).width / 2, localPlayer.y - 20);
   }
 
+  // Reset shadow
+  ctx.shadowBlur = 0;
+
+  // Draw other players without glow
   for (const id in gameState.players) {
     if (id === socket.id) continue;
     const p = gameState.players[id];
     ctx.save();
     ctx.translate(p.x, p.y);
     ctx.rotate(p.angle);
-    ctx.fillStyle = p.paused ? "#808080" : p.color;
+    ctx.fillStyle = p.paused ? "#404040" : p.color;
+    ctx.strokeStyle = "#ffffff";
+    ctx.lineWidth = 2;
     ctx.beginPath();
     ctx.moveTo(15, 0);
     ctx.lineTo(-10, 10);
     ctx.lineTo(-10, -10);
     ctx.closePath();
     ctx.fill();
+    ctx.stroke();
     ctx.restore();
-    ctx.fillStyle = "#FFFFFF";
+    
+    ctx.fillStyle = "#ffffff";
     ctx.font = "12px Arial";
     ctx.fillText(p.username, p.x - ctx.measureText(p.username).width / 2, p.y - 20);
   }
 
+  // Draw bullets with minimal effects
   gameState.bullets.forEach((b) => {
     ctx.fillStyle = b.color;
     ctx.beginPath();
-    ctx.arc(b.x, b.y, 3, 0, Math.PI * 2);
+    ctx.arc(b.x, b.y, 4, 0, Math.PI * 2);
     ctx.fill();
   });
 
+  // Draw bots without glow
   gameState.bots.forEach((b) => {
     ctx.save();
     ctx.translate(b.x, b.y);
     ctx.rotate(b.angle);
     ctx.fillStyle = b.color;
+    ctx.strokeStyle = "#ff0000";
+    ctx.lineWidth = 2;
     ctx.beginPath();
     ctx.moveTo(15, 0);
     ctx.lineTo(-10, 10);
     ctx.lineTo(-10, -10);
     ctx.closePath();
     ctx.fill();
+    ctx.stroke();
     ctx.restore();
   });
 
-  // Draw FPS and ping
-  ctx.fillStyle = "rgba(255, 255, 255, 0.8)";
+  // Draw UI
+  ctx.fillStyle = "#ffffff";
   ctx.font = "14px Arial";
   ctx.fillText(`FPS: ${fps}`, 10, 20);
   ctx.fillText(`Ping: ${ping}ms`, 10, 40);
 
   // Draw player list
-  ctx.fillStyle = "rgba(0, 0, 0, 0.5)";
+  ctx.fillStyle = "rgba(0, 10, 30, 0.7)";
   ctx.fillRect(canvas.width - 200, 0, 200, Object.keys(gameState.players).length * 20 + 10);
-  ctx.fillStyle = "white";
   let y = 20;
   for (const id in gameState.players) {
     const player = gameState.players[id];
     const status = player.paused ? " (PAUSED)" : "";
+    ctx.fillStyle = player.color;
     ctx.fillText(`${player.username}${status}`, canvas.width - 190, y);
     y += 20;
   }
