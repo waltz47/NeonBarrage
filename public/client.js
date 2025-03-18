@@ -188,9 +188,9 @@ function draw() {
   // Cache and reuse the gradient instead of creating it every frame
   if (!cachedGradient) {
     cachedGradient = ctx.createRadialGradient(
-      canvas.width/2, canvas.height/2, 0,
-      canvas.width/2, canvas.height/2, canvas.width/2
-    );
+    canvas.width/2, canvas.height/2, 0,
+    canvas.width/2, canvas.height/2, canvas.width/2
+  );
     cachedGradient.addColorStop(0, 'rgba(0,20,40,0)');
     cachedGradient.addColorStop(1, 'rgba(0,20,40,0.3)');
   }
@@ -217,7 +217,7 @@ function draw() {
     // Only apply shadow blur for larger particles
     if (p.size > 3) {
       ctx.shadowBlur = 10;
-      ctx.shadowColor = `#${p.color}`;
+    ctx.shadowColor = `#${p.color}`;
     } else {
       ctx.shadowBlur = 0;
     }
