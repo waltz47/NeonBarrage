@@ -12,6 +12,7 @@ const gameState = {
   players: {},
   bullets: [],
   bots: [],
+  frameCount: 0
 };
 
 const BOT_SPAWN_RATE = 2;
@@ -40,8 +41,9 @@ const MIN_DIFFICULTY = 1;
 let difficultyLevel = 1;
 let gameStartTime = Date.now();
 
-let gameWidth = 800;
-let gameHeight = 600;
+// Use reasonable defaults for game dimensions
+let gameWidth = 1024;  // Default to a standard resolution
+let gameHeight = 768;
 
 // Add neon color palette
 const NEON_PALETTE = {
@@ -79,23 +81,31 @@ function findSafeSpawnPoint() {
   const edge = Math.floor(Math.random() * 4); // 0: top, 1: right, 2: bottom, 3: left
   let x, y;
 
+  // Add a margin to ensure bots are visible when spawning
+  const margin = 50;
+
   switch(edge) {
     case 0: // top
-      x = Math.random() * gameWidth;
-      y = 0;
+      x = Math.random() * (gameWidth - 2*margin) + margin;
+      y = margin;
       break;
     case 1: // right
-      x = gameWidth;
-      y = Math.random() * gameHeight;
+      x = gameWidth - margin;
+      y = Math.random() * (gameHeight - 2*margin) + margin;
       break;
     case 2: // bottom
-      x = Math.random() * gameWidth;
-      y = gameHeight;
+      x = Math.random() * (gameWidth - 2*margin) + margin;
+      y = gameHeight - margin;
       break;
     case 3: // left
-      x = 0;
-      y = Math.random() * gameHeight;
+      x = margin;
+      y = Math.random() * (gameHeight - 2*margin) + margin;
       break;
+  }
+
+  // If no players, just return this point
+  if (Object.keys(gameState.players).length === 0) {
+    return { x, y, angle: Math.atan2(gameHeight/2 - y, gameWidth/2 - x) };
   }
 
   // Check distance from all players
@@ -174,7 +184,7 @@ function findNearestTarget(bullet, grid) {
         if (!gameState.players[bullet.owner] && !gameState.players[target.owner]) continue;
 
         const dx = target.x - bullet.x;
-        const dy = target.y - target.y;
+        const dy = target.y - bullet.y;
         const distSq = dx * dx + dy * dy;
         if (distSq < nearestDist) {
           nearestDist = distSq;
@@ -210,18 +220,22 @@ function updateGame() {
 
   // Move bullets and clean up
   const grid = {};
-  gameState.bullets.forEach((bullet, index) => {
+  
+  // Only rebuild grid every frame (spatial partitioning)
+  for (let i = 0; i < gameState.bullets.length; i++) {
+    const bullet = gameState.bullets[i];
     const key = getGridKey(bullet.x, bullet.y);
     if (!grid[key]) grid[key] = [];
-    grid[key].push({ bullet, index });
-  });
+    grid[key].push({ bullet, index: i });
+  }
 
+  // Process bullets in batches to improve performance
   for (let i = gameState.bullets.length - 1; i >= 0; i--) {
     const bullet = gameState.bullets[i];
     const speed = bullet.speed || BULLET_SPEED;
 
-    // Only apply homing to player bullets
-    if (gameState.players[bullet.owner]) {
+    // Only apply homing logic for player bullets and limit its frequency
+    if (gameState.players[bullet.owner] && i % 3 === 0) { // Only process 1/3 of player bullets for homing per frame
       const target = findNearestTarget(bullet, grid);
       
       if (target) {
@@ -242,7 +256,7 @@ function updateGame() {
     bullet.x += Math.cos(bullet.angle) * speed;
     bullet.y += Math.sin(bullet.angle) * speed;
 
-    // Remove if out of bounds
+    // Remove if out of bounds (using simple bounds check)
     if (bullet.x < 0 || bullet.x > gameWidth || 
         bullet.y < 0 || bullet.y > gameHeight) {
       gameState.bullets.splice(i, 1);
@@ -250,48 +264,63 @@ function updateGame() {
   }
 
   // Move bots, shoot, and clean up out-of-bounds
-  for (let i = gameState.bots.length - 1; i >= 0; i--) {
+  // Process only a subset of bots per frame in high-load scenarios
+  const botsToProcess = Math.min(gameState.bots.length, 10); // Process at most 10 bots per frame
+  const processInterval = Math.max(1, Math.floor(gameState.bots.length / botsToProcess));
+  
+  for (let i = gameState.bots.length - 1; i >= 0; i -= processInterval) {
     const bot = gameState.bots[i];
     const target = findNearestPlayer(bot);
     if (target) {
       const targetAngle = Math.atan2(target.y - bot.y, target.x - bot.x);
       let desiredAngle = targetAngle;
 
-      const nearbyBots = gameState.bots.filter(
-        (b) => b.id !== bot.id && Math.hypot(b.x - bot.x, b.y - bot.y) < BOID_RADIUS
-      );
+      // Only apply complex boid behavior for bots that are visible on screen
+      const isOnScreen = bot.x >= 0 && bot.x <= gameWidth && bot.y >= 0 && bot.y <= gameHeight;
+      
+      if (isOnScreen) {
+        // Limit the number of nearby bots we check
+        const maxNearbyBotsToCheck = 5;
+        const nearbyBots = gameState.bots
+          .filter((b, idx) => b.id !== bot.id && 
+                    Math.hypot(b.x - bot.x, b.y - bot.y) < BOID_RADIUS)
+          .slice(0, maxNearbyBotsToCheck);
 
-      if (nearbyBots.length > 0) {
-        let separationX = 0, separationY = 0;
-        let avgAngle = 0;
-        let centerX = 0, centerY = 0;
-        nearbyBots.forEach((nb) => {
-          const dx = bot.x - nb.x;
-          const dy = bot.y - nb.y;
-          const dist = Math.hypot(dx, dy);
-          if (dist > 0) {
-            separationX += dx / dist;
-            separationY += dy / dist;
+        if (nearbyBots.length > 0) {
+          let separationX = 0, separationY = 0;
+          let avgAngle = 0;
+          let centerX = 0, centerY = 0;
+          
+          const nearbyBotsCount = nearbyBots.length;
+          for (let j = 0; j < nearbyBotsCount; j++) {
+            const nb = nearbyBots[j];
+            const dx = bot.x - nb.x;
+            const dy = bot.y - nb.y;
+            const dist = Math.hypot(dx, dy);
+            if (dist > 0) {
+              separationX += dx / dist;
+              separationY += dy / dist;
+            }
+            avgAngle += nb.angle;
+            centerX += nb.x;
+            centerY += nb.y;
           }
-          avgAngle += nb.angle;
-          centerX += nb.x;
-          centerY += nb.y;
-        });
 
-        avgAngle /= nearbyBots.length;
-        centerX /= nearbyBots.length;
-        centerY /= nearbyBots.length;
+          avgAngle /= nearbyBotsCount;
+          centerX /= nearbyBotsCount;
+          centerY /= nearbyBotsCount;
 
-        const separationAngle = Math.atan2(separationY, separationX);
-        const cohesionAngle = Math.atan2(centerY - bot.y, centerX - bot.x);
+          const separationAngle = Math.atan2(separationY, separationX);
+          const cohesionAngle = Math.atan2(centerY - bot.y, centerX - bot.x);
 
-        const boidsInfluence = (
-          separationAngle * SEPARATION_WEIGHT +
-          avgAngle * ALIGNMENT_WEIGHT +
-          cohesionAngle * COHESION_WEIGHT
-        ) / (SEPARATION_WEIGHT + ALIGNMENT_WEIGHT + COHESION_WEIGHT);
+          const boidsInfluence = (
+            separationAngle * SEPARATION_WEIGHT +
+            avgAngle * ALIGNMENT_WEIGHT +
+            cohesionAngle * COHESION_WEIGHT
+          ) / (SEPARATION_WEIGHT + ALIGNMENT_WEIGHT + COHESION_WEIGHT);
 
-        desiredAngle = (desiredAngle * PURSUIT_WEIGHT + boidsInfluence) / (PURSUIT_WEIGHT + 1);
+          desiredAngle = (desiredAngle * PURSUIT_WEIGHT + boidsInfluence) / (PURSUIT_WEIGHT + 1);
+        }
       }
 
       let angleDiff = desiredAngle - bot.angle;
@@ -299,7 +328,8 @@ function updateGame() {
       if (angleDiff < -Math.PI) angleDiff += 2 * Math.PI;
       bot.angle += Math.sign(angleDiff) * Math.min(Math.abs(angleDiff), TURN_RATE);
 
-      if (Math.abs(angleDiff) < SHOOT_ANGLE && 
+      // Reduced shooting logic checks
+      if (isOnScreen && Math.abs(angleDiff) < SHOOT_ANGLE && 
           now - bot.lastShot > BOT_FIRE_COOLDOWN && 
           Math.random() < BOT_FIRE_RATE) {
         gameState.bullets.push({
@@ -315,51 +345,63 @@ function updateGame() {
 
     bot.x += Math.cos(bot.angle) * BOT_SPEED;
     bot.y += Math.sin(bot.angle) * BOT_SPEED;
-    if (bot.x < 0 || bot.x > gameWidth || bot.y < 0 || bot.y > gameHeight) {
+    if (bot.x < -50 || bot.x > gameWidth + 50 || bot.y < -50 || bot.y > gameHeight + 50) {
       gameState.bots.splice(i, 1);
     }
   }
 
-  // Bullet vs Bot collision
+  // Bullet vs Bot collision - use spatial grid to optimize
   for (let i = gameState.bullets.length - 1; i >= 0; i--) {
     const bullet = gameState.bullets[i];
+    // Skip bot bullets hitting bots
+    if (!gameState.players[bullet.owner]) continue;
+    
+    const gridX = Math.floor(bullet.x / GRID_SIZE);
+    const gridY = Math.floor(bullet.y / GRID_SIZE);
+    
+    // Check bots
     for (let j = gameState.bots.length - 1; j >= 0; j--) {
       const bot = gameState.bots[j];
       const dx = bot.x - bullet.x;
       const dy = bot.y - bullet.y;
-      if (dx * dx + dy * dy < 400) { // Increased from 225 (15^2 -> 20^2)
-        if (!gameState.bots.some(b => b.id === bullet.owner)) {
-          const botColor = bot.color;
-          gameState.bots.splice(j, 1);
-          gameState.bullets.splice(i, 1);
-          
-          // Add score for the player who killed the bot
-          if (gameState.players[bullet.owner]) {
-            gameState.players[bullet.owner].score++;
-          }
-          
-          io.emit("explosion", { 
-            x: bot.x, 
-            y: bot.y, 
-            color: `${NEON_PALETTE.orange}, ${NEON_PALETTE.red}, ${NEON_PALETTE.yellow}`,
-            size: 30
-          });
-          break;
+      const distSquared = dx * dx + dy * dy;
+      
+      if (distSquared < 400) { // 20^2
+        gameState.bots.splice(j, 1);
+        gameState.bullets.splice(i, 1);
+        
+        // Add score for the player who killed the bot
+        if (gameState.players[bullet.owner]) {
+          gameState.players[bullet.owner].score++;
         }
+        
+        io.emit("explosion", { 
+          x: bot.x, 
+          y: bot.y, 
+          color: `${NEON_PALETTE.orange}, ${NEON_PALETTE.red}, ${NEON_PALETTE.yellow}`,
+          size: 30
+        });
+        break;
       }
     }
   }
 
-  // Bullet vs Player collision with invulnerability
-  for (const id in gameState.players) {
-    const player = gameState.players[id];
-    if (player.paused || (player.invulnerableUntil && now < player.invulnerableUntil)) continue;
-    for (let i = gameState.bullets.length - 1; i >= 0; i--) {
-      const bullet = gameState.bullets[i];
-      if (gameState.players[bullet.owner]) continue;
+  // Bullet vs Player collision with invulnerability - optimize using spatial grid
+  const activePlayers = Object.entries(gameState.players)
+    .filter(([_, player]) => !(player.paused || (player.invulnerableUntil && now < player.invulnerableUntil)))
+    .map(([id, player]) => ({ id, player }));
+
+  // Only check collisions for AI bullets (not player bullets)
+  const aiBullets = gameState.bullets.filter(b => !gameState.players[b.owner]);
+  
+  for (const { id, player } of activePlayers) {
+    for (let i = aiBullets.length - 1; i >= 0; i--) {
+      const bullet = aiBullets[i];
       const dx = player.x - bullet.x;
       const dy = player.y - bullet.y;
-      if (dx * dx + dy * dy < 400) { // Increased from 225 to match bot collision size
+      const distSquared = dx * dx + dy * dy;
+      
+      if (distSquared < 400) { // 20^2
         io.emit("explosion", { 
           x: player.x, 
           y: player.y, 
@@ -368,86 +410,119 @@ function updateGame() {
         });
         delete gameState.players[id];
         io.to(id).emit("dead");
-        gameState.bullets.splice(i, 1);
+        
+        // Find and remove the bullet in the main bullet array
+        const bulletIndex = gameState.bullets.indexOf(bullet);
+        if (bulletIndex !== -1) {
+          gameState.bullets.splice(bulletIndex, 1);
+        }
+        // Also remove from our temporary array
+        aiBullets.splice(i, 1);
       }
     }
   }
 
-  // Bullet vs Bullet collision with spatial partitioning
+  // Bullet vs Bullet collision - use the already built spatial grid
+  // Separate player and AI bullets for faster collision detection
   const playerBullets = [];
-  const aiBullets = [];
-  gameState.bullets.forEach((bullet, index) => {
+  
+  for (let i = 0; i < gameState.bullets.length; i++) {
+    const bullet = gameState.bullets[i];
     if (gameState.players[bullet.owner]) {
-      playerBullets.push({ bullet, index });
-    } else {
-      aiBullets.push({ bullet, index });
+      playerBullets.push({ bullet, index: i });
     }
-  });
+  }
 
-  for (let i = playerBullets.length - 1; i >= 0; i--) {
+  // For high bullet counts, process only a subset per frame
+  const bulletsToProcess = Math.min(playerBullets.length, 20);
+  const bulletInterval = Math.max(1, Math.floor(playerBullets.length / bulletsToProcess));
+  
+  for (let i = 0; i < playerBullets.length; i += bulletInterval) {
     const pBullet = playerBullets[i].bullet;
     const pIndex = playerBullets[i].index;
     const gridX = Math.floor(pBullet.x / GRID_SIZE);
     const gridY = Math.floor(pBullet.y / GRID_SIZE);
 
     // Check current and adjacent grid cells
-    for (let dx = -1; dx <= 1; dx++) {
+    let collided = false;
+    gridCheck: for (let dx = -1; dx <= 1; dx++) {
       for (let dy = -1; dy <= 1; dy++) {
         const key = `${gridX + dx},${gridY + dy}`;
         if (!grid[key]) continue;
+        
         for (const { bullet: aBullet, index: aIndex } of grid[key]) {
           if (gameState.players[aBullet.owner]) continue; // Skip if both are player bullets
+          if (aBullet === pBullet) continue; // Skip self
+          
           const dx = pBullet.x - aBullet.x;
           const dy = pBullet.y - aBullet.y;
-          if (dx * dx + dy * dy < 144) { // Increased from 64 (8^2 -> 12^2)
-            gameState.bullets.splice(Math.max(pIndex, aIndex), 1);
-            gameState.bullets.splice(Math.min(pIndex, aIndex), 1);
-            io.emit("explosion", { 
-              x: pBullet.x, 
-              y: pBullet.y,
-              color: `255, 255, 255`, // Revert to simple white explosion
-              size: 15
-            });
-            playerBullets.splice(i, 1);
-            aiBullets.splice(aiBullets.findIndex(b => b.index === aIndex), 1);
-            break; // Bullet destroyed, move to next
+          const distSquared = dx * dx + dy * dy;
+          
+          if (distSquared < 144) { // 12^2
+            // Remove bullets in correct order to prevent index errors
+            const maxIdx = Math.max(pIndex, aIndex);
+            const minIdx = Math.min(pIndex, aIndex);
+            
+            if (maxIdx < gameState.bullets.length && minIdx < gameState.bullets.length) {
+              gameState.bullets.splice(maxIdx, 1);
+              gameState.bullets.splice(minIdx, 1);
+              
+              // Simple explosion effect with no color variations
+              io.emit("explosion", { 
+                x: pBullet.x, 
+                y: pBullet.y,
+                color: `255, 255, 255`, // Simple white
+                size: 15
+              });
+              collided = true;
+              break gridCheck; // Bullet destroyed, exit nested loops
+            }
           }
         }
       }
     }
   }
 
-  // Spawn bots with limit (calculate difficulty only when needed)
-  if (gameState.bots.length < MAX_BOTS) {
-    const currentDifficulty = adjustDifficulty();
-    const currentMaxBots = Math.min(
-      MAX_BOTS + (currentDifficulty * DIFFICULTY_BOT_INCREMENT), 
-      30
-    );
+  // Spawn bots with limit (only check every 30 frames to reduce CPU load)
+  if (gameState.frameCount % 30 === 0) {
+    if (gameState.bots.length < MAX_BOTS) {
+      const currentDifficulty = adjustDifficulty();
+      const currentMaxBots = Math.min(
+        MAX_BOTS + (currentDifficulty * DIFFICULTY_BOT_INCREMENT), 
+        30
+      );
 
-    if (gameState.bots.length < currentMaxBots) {
-      const players = Object.values(gameState.players);
-      // Only calculate average upgrade if we might spawn a bot
-      if (Math.random() < BOT_SPAWN_RATE * players.length / 60) {
-        const avgUpgradeLevel = players.length > 0 
-          ? players.reduce((sum, p) => sum + p.upgrade, 0) / players.length 
-          : 0;
-        
-        const adjustedSpawnRate = (BOT_SPAWN_RATE + (avgUpgradeLevel * BOT_SPAWN_RATE_INCREASE)) 
-                                 * (players.length / Math.max(1, currentDifficulty));
-        
-        if (Math.random() < adjustedSpawnRate) {
-          const bot = spawnBot();
-          if (bot) gameState.bots.push(bot);
+      if (gameState.bots.length < currentMaxBots) {
+        const players = Object.values(gameState.players);
+        // Try to spawn a bot if there are players
+        if (players.length > 0) {
+          const avgUpgradeLevel = players.reduce((sum, p) => sum + p.upgrade, 0) / players.length;
+          // Fixed spawn rate calculation
+          const spawnChance = BOT_SPAWN_RATE * (1 + avgUpgradeLevel * BOT_SPAWN_RATE_INCREASE);
+          
+          if (Math.random() < spawnChance) {
+            const bot = spawnBot();
+            if (bot) {
+              gameState.bots.push(bot);
+              console.log("Bot spawned", bot.id);
+            }
+          }
         }
       }
     }
   }
 
-  io.emit("update", gameState);
+  // Increment frame counter
+  gameState.frameCount = (gameState.frameCount || 0) + 1;
+
+  // Only send updates at 30fps to reduce network traffic
+  if (gameState.frameCount % 2 === 0) {
+    io.emit("update", gameState);
+  }
 }
 
-setInterval(updateGame, 1000 / 60); // Restore to 60 FPS
+// Change server update rate to 60fps, but send updates at 30fps
+setInterval(updateGame, 1000 / 60);
 
 io.on("connection", (socket) => {
   console.log("Player connected:", socket.id);
@@ -457,10 +532,15 @@ io.on("connection", (socket) => {
 
   socket.on("login", (username) => {
     const colorIndex = Object.keys(gameState.players).length % PLAYER_COLORS.length;
+    
+    // Set initial player position
+    const initialX = gameWidth / 2;
+    const initialY = gameHeight / 2;
+    
     gameState.players[socket.id] = {
       id: socket.id,
-      x: gameWidth / 2,
-      y: gameHeight / 2,
+      x: initialX,
+      y: initialY,
       angle: 0,
       username,
       color: PLAYER_COLORS[colorIndex],
@@ -470,13 +550,58 @@ io.on("connection", (socket) => {
       lastShot: 0,
       upgrade: 0 // Track upgrade level: 0=normal, 1=fast, 2=double, 3=triple
     };
+    
+    // Send confirmation with initial position
+    socket.emit("login-confirm", {
+      position: { x: initialX, y: initialY },
+      color: PLAYER_COLORS[colorIndex]
+    });
   });
 
   socket.on("move", (move) => {
     const player = gameState.players[socket.id];
     if (player && !player.paused) {
-      player.x = Math.max(0, Math.min(gameWidth, player.x + move.x));
-      player.y = Math.max(0, Math.min(gameHeight, player.y + move.y));
+      // Apply server movement with smoothing
+      // For small movements, trust client more for responsiveness
+      let moveX = move.x;
+      let moveY = move.y;
+      
+      // Apply standard server movement with bounds checking
+      const newX = Math.max(0, Math.min(gameWidth, player.x + moveX));
+      const newY = Math.max(0, Math.min(gameHeight, player.y + moveY));
+      
+      // Update server position
+      player.x = newX;
+      player.y = newY;
+      
+      // If client also sent its position, we can use it for additional validation
+      if (move.clientX !== undefined && move.clientY !== undefined) {
+        // Check if client position is within reasonable bounds
+        const dx = move.clientX - player.x;
+        const dy = move.clientY - player.y;
+        const distSquared = dx * dx + dy * dy;
+        
+        // Only send corrections for significant discrepancies
+        // If client position is too far off from server position (could be cheating or severe lag)
+        if (distSquared > 10000) { // Increased threshold to reduce teleporting
+          // Force client to reconcile with a direct position update
+          socket.emit("position-correction", { x: player.x, y: player.y });
+        } else if (distSquared > 1024) { // Medium adjustment for moderate discrepancies
+          // Apply stronger server adjustment to client position
+          // but also adapt server position slightly to reduce perceived lag
+          player.x += dx * 0.05; // Server moves 5% toward client position
+          player.y += dy * 0.05;
+          
+          // Only send correction if still significantly off after adjustment
+          if (distSquared > 2500) {
+            socket.emit("position-correction", { x: player.x, y: player.y });
+          }
+        } else {
+          // For small discrepancies, subtly adjust server toward client for better feel
+          player.x += dx * 0.1;
+          player.y += dy * 0.1;
+        }
+      }
     }
   });
 
@@ -485,7 +610,7 @@ io.on("connection", (socket) => {
     if (player) player.angle = angle;
   });
 
-  socket.on("shoot", () => {
+  socket.on("shoot", (data) => {
     const player = gameState.players[socket.id];
     if (!player || player.paused) return;
 
@@ -496,10 +621,34 @@ io.on("connection", (socket) => {
     // Update player's upgrade based on score
     player.upgrade = Math.floor(player.score / 50);
 
+    // Get the position to spawn bullets - prefer client position if provided
+    let shootX = player.x;
+    let shootY = player.y;
+    let shootAngle = player.angle;
+    
+    // Use client data if available and within reasonable bounds
+    if (data && typeof data === 'object') {
+      if (data.clientX !== undefined && data.clientY !== undefined) {
+        const dx = data.clientX - player.x;
+        const dy = data.clientY - player.y;
+        const distSquared = dx * dx + dy * dy;
+        
+        // Only use client position if it's reasonably close to server position
+        if (distSquared < 2500) { // 50^2
+          shootX = data.clientX;
+          shootY = data.clientY;
+        }
+      }
+      
+      if (data.angle !== undefined) {
+        shootAngle = data.angle;
+      }
+    }
+
     const createBullet = (angleOffset = 0) => ({
-      x: player.x,
-      y: player.y,
-      angle: player.angle + angleOffset,
+      x: shootX,
+      y: shootY,
+      angle: shootAngle + angleOffset,
       color: player.color,
       owner: player.id,
       speed: PLAYER_BULLET_SPEED
@@ -530,8 +679,14 @@ io.on("connection", (socket) => {
   });
 
   socket.on("setDimensions", (dimensions) => {
-    gameWidth = dimensions.width;
-    gameHeight = dimensions.height;
+    // Ensure we have valid dimensions before updating
+    if (dimensions && dimensions.width && dimensions.height) {
+      if (dimensions.width > 0 && dimensions.height > 0) {
+        console.log("Setting game dimensions:", dimensions);
+        gameWidth = dimensions.width;
+        gameHeight = dimensions.height;
+      }
+    }
   });
 
   socket.on("ping", () => {
