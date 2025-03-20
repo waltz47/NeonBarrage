@@ -78,7 +78,7 @@ const SEPARATION_WEIGHT = 0.5;
 const ALIGNMENT_WEIGHT = 0.3;
 const COHESION_WEIGHT = 0.3;
 const PURSUIT_WEIGHT = 4.0;
-const GRID_SIZE = 50; // Grid cell size for spatial partitioning (adjust based on bullet size)
+const GRID_SIZE = 100; // Increased from 50 to reduce grid cell count
 const DIFFICULTY_INCREASE_INTERVAL = 30000; // 30 seconds
 const DIFFICULTY_BOT_INCREMENT = 2;
 const BOT_FIRE_RATE = 0.01; // Reduced from 0.03
@@ -339,7 +339,7 @@ function updateGame() {
   // Build grid for AI bullets to optimize collision checks
   const aiBulletGrid = {};
   aiBulletsForCollision.forEach(bullet => {
-    const key = getGridKey(bullet.x, bullet.y);
+    const key = `${Math.floor(bullet.x / GRID_SIZE)},${Math.floor(bullet.y / GRID_SIZE)}`;
     if (!aiBulletGrid[key]) aiBulletGrid[key] = [];
     aiBulletGrid[key].push(bullet);
   });
@@ -347,12 +347,16 @@ function updateGame() {
   // Check player bullets against AI bullets using grid
   for (let i = playerBulletsForCollision.length - 1; i >= 0; i--) {
     const playerBullet = playerBulletsForCollision[i];
-    const gridKey = getGridKey(playerBullet.x, playerBullet.y);
+    if (!playerBullet.active) continue; // Skip if already destroyed
     
-    // Check nearby grid cells
-    for (let dx = -1; dx <= 1; dx++) {
-      for (let dy = -1; dy <= 1; dy++) {
-        const checkKey = `${Math.floor(playerBullet.x / GRID_SIZE) + dx},${Math.floor(playerBullet.y / GRID_SIZE) + dy}`;
+    const gridX = Math.floor(playerBullet.x / GRID_SIZE);
+    const gridY = Math.floor(playerBullet.y / GRID_SIZE);
+    let collisionFound = false;
+    
+    // Only check immediate neighboring cells
+    for (let dx = -1; dx <= 1 && !collisionFound; dx++) {
+      for (let dy = -1; dy <= 1 && !collisionFound; dy++) {
+        const checkKey = `${gridX + dx},${gridY + dy}`;
         const nearbyAiBullets = aiBulletGrid[checkKey];
         
         if (nearbyAiBullets) {
@@ -377,19 +381,15 @@ function updateGame() {
                 x: (playerBullet.x + aiBullet.x) / 2,
                 y: (playerBullet.y + aiBullet.y) / 2,
                 color: `${NEON_PALETTE.cyan}, ${NEON_PALETTE.blue}, ${NEON_PALETTE.purple}`,
-                size: 15  // Smaller explosion for bullet collisions
+                size: 15
               });
               
-              break; // Exit inner loop since bullet is destroyed
+              collisionFound = true;
+              break;
             }
           }
-          
-          // If player bullet was destroyed, exit outer loop
-          if (!playerBullet.active) break;
         }
       }
-      // If player bullet was destroyed, exit outermost loop
-      if (!playerBullet.active) break;
     }
   }
   
