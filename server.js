@@ -73,12 +73,12 @@ const BOT_SPEED = 2;
 const TURN_RATE = 0.1;
 const SHOOT_ANGLE = Math.PI / 6;
 const MAX_BOTS = 10;
-const BOID_RADIUS = 100;
-const SEPARATION_WEIGHT = 0.5;
-const ALIGNMENT_WEIGHT = 0.3;
-const COHESION_WEIGHT = 0.3;
-const PURSUIT_WEIGHT = 4.0;
-const GRID_SIZE = 100; // Increased from 50 to reduce grid cell count
+const BOID_RADIUS = 200; // Increased from 100 for wider flocking range
+const SEPARATION_WEIGHT = 1.0; // Increased from 0.5 for stronger separation
+const ALIGNMENT_WEIGHT = 0.6; // Increased from 0.3 for better alignment
+const COHESION_WEIGHT = 0.4; // Increased from 0.3 for moderate grouping
+const PURSUIT_WEIGHT = 3.0; // Reduced from 4.0 to make flocking more noticeable
+const GRID_SIZE = 400; // Increased from 200 to reduce grid cells further
 const DIFFICULTY_INCREASE_INTERVAL = 30000; // 30 seconds
 const DIFFICULTY_BOT_INCREMENT = 2;
 const BOT_FIRE_RATE = 0.01; // Reduced from 0.03
@@ -86,9 +86,11 @@ const BOT_FIRE_COOLDOWN = 1000; // Minimum 1 second between shots
 const MIN_SPAWN_DISTANCE = 500; // Increased from 300
 const BOT_SPAWN_RATE_INCREASE = 0.5; // Additional spawn rate per player upgrade level
 const BULLET_HOMING_STRENGTH = 0.02; // Reduced from 0.04 for even smoother turning
-const BULLET_HOMING_RANGE = 800; // Increased from 400 for much longer range detection
+const BULLET_HOMING_RANGE = 400; // Increased from 400 for much longer range detection
 const DIFFICULTY_DECREASE_ON_DEATH = 1;
 const MIN_DIFFICULTY = 1;
+const BULLET_HOMING_CHECK_INTERVAL = 12; // Increased from 6 to reduce checks
+const BATCH_SIZE = 500; // Increased from 200 to process more bullets per frame
 let difficultyLevel = 1;
 let gameStartTime = Date.now();
 
@@ -234,14 +236,21 @@ function findNearestTarget(bullet, grid) {
         if (gameState.players[bullet.owner] && gameState.players[target.owner]) continue;
         if (!gameState.players[bullet.owner] && !gameState.players[target.owner]) continue;
 
-        const dx = target.x - bullet.x;
-        const dy = target.y - bullet.y;
-        const distSq = dx * dx + dy * dy;
+        const targetDx = target.x - bullet.x;
+        const targetDy = target.y - bullet.y;
+        const distSq = targetDx * targetDx + targetDy * targetDy;
+        
         if (distSq < nearestDist) {
           nearestDist = distSq;
           nearestTarget = target;
+          // Early exit if we find a very close target
+          if (distSq < 2500) { // 50^2
+            // Break out of both loops using labels
+            break;
+          }
         }
       }
+      if (nearestDist < 2500) break; // Break outer loop if we found a very close target
     }
   }
   return nearestTarget;
@@ -270,90 +279,205 @@ function adjustDifficulty() {
 function updateGame() {
   const now = Date.now();
 
-  // Profile bullet collisions
-  profiler.startProfile('bullet-collisions');
-  
-  // Get active bullets
+  // Get active bullets first, outside of any profiling section
   const activeBullets = bulletPool.getActiveBullets();
-  const grid = {};
+
+  // Only rebuild grid every other frame if bullet count is low
+  const shouldRebuildGrid = gameState.frameCount % (activeBullets.length < 50 ? 2 : 1) === 0;
+  const grid = shouldRebuildGrid ? {} : gameState._lastGrid || {};
   
-  // Process bullets in batches of 100
-  const BATCH_SIZE = 100;
-  const totalBatches = Math.ceil(activeBullets.length / BATCH_SIZE);
-  
-  // Only process one batch per frame, rotating through all batches
+  // Process bullets in larger batches
+  const totalBatches = Math.max(1, Math.ceil(activeBullets.length / BATCH_SIZE));
   const currentBatch = gameState.frameCount % totalBatches;
   const start = currentBatch * BATCH_SIZE;
   const end = Math.min(start + BATCH_SIZE, activeBullets.length);
-  
-  // Build grid for current batch
-  for (let i = start; i < end; i++) {
-    const bullet = activeBullets[i];
-    const key = getGridKey(bullet.x, bullet.y);
-    if (!grid[key]) grid[key] = [];
-    grid[key].push({ bullet, index: i });
-  }
 
-  // Process current batch of bullets
-  for (let i = start; i < end; i++) {
-    const bullet = activeBullets[i];
-    const bulletSpeed = bullet.speed || BULLET_SPEED;
-
-    // Only apply homing logic for player bullets and limit its frequency
-    if (gameState.players[bullet.owner] && i % 3 === 0) {
-      const target = findNearestTarget(bullet, grid);
+  // Build grid independently and more efficiently
+  profiler.startProfile('bullet_build_grid');
+  if (shouldRebuildGrid && activeBullets.length > 0) {
+    // Pre-calculate grid coordinates for all bullets in batch
+    const gridCoords = new Array(end - start);
+    for (let i = start; i < end; i++) {
+      const bullet = activeBullets[i];
+      if (!bullet.active) continue;
       
-      if (target) {
-        const dx = target.x - bullet.x;
-        const dy = target.y - bullet.y;
-        const desiredAngle = Math.atan2(dy, dx);
-        
-        let angleDiff = desiredAngle - bullet.angle;
-        if (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
-        if (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
-        
-        bullet.angle += Math.sign(angleDiff) * 
-                       Math.min(Math.abs(angleDiff), BULLET_HOMING_STRENGTH);
+      const gridX = Math.floor(bullet.x / GRID_SIZE);
+      const gridY = Math.floor(bullet.y / GRID_SIZE);
+      gridCoords[i - start] = { bullet, gridX, gridY, key: `${gridX},${gridY}` };
+    }
+
+    // Sort by grid key for better spatial locality
+    gridCoords.sort((a, b) => a?.key.localeCompare(b?.key));
+
+    // Build grid from sorted coordinates
+    let currentKey = null;
+    let currentCell = null;
+
+    for (let i = 0; i < gridCoords.length; i++) {
+      const coord = gridCoords[i];
+      if (!coord) continue;
+
+      if (coord.key !== currentKey) {
+        currentKey = coord.key;
+        currentCell = grid[currentKey] = {
+          bullets: [],
+          playerBullets: 0,
+          aiBullets: 0,
+          bounds: {
+            minX: coord.gridX * GRID_SIZE,
+            maxX: (coord.gridX + 1) * GRID_SIZE,
+            minY: coord.gridY * GRID_SIZE,
+            maxY: (coord.gridY + 1) * GRID_SIZE
+          }
+        };
+      }
+
+      currentCell.bullets.push(coord.bullet);
+      if (gameState.players[coord.bullet.owner]) {
+        currentCell.playerBullets++;
+      } else {
+        currentCell.aiBullets++;
       }
     }
+
+    // Cache grid for next frame
+    gameState._lastGrid = grid;
+  }
+  profiler.endProfile('bullet_build_grid');
+
+  // Process bullet movement and homing independently
+  profiler.startProfile('bullet_movement');
+  for (let i = start; i < end; i++) {
+    const bullet = activeBullets[i];
+    if (!bullet.active) continue;
+    
+    const bulletSpeed = bullet.speed || BULLET_SPEED;
 
     // Move bullet
     bullet.x += Math.cos(bullet.angle) * bulletSpeed;
     bullet.y += Math.sin(bullet.angle) * bulletSpeed;
 
     // Remove if out of bounds
-    if (bullet.x < 0 || bullet.x > gameWidth || 
-        bullet.y < 0 || bullet.y > gameHeight) {
+    const outOfBounds = bullet.x < 0 || bullet.x > gameWidth || 
+                       bullet.y < 0 || bullet.y > gameHeight;
+    if (outOfBounds) {
       bulletPool.release(bullet);
     }
   }
-  profiler.endProfile('bullet-collisions');
+  profiler.endProfile('bullet_movement');
 
-  // Profile bullet vs bullet collision
-  profiler.startProfile('bullet-bullet-collisions');
+  // Handle bullet homing independently with optimizations
+  profiler.startProfile('bullet_homing');
+  // Pre-calculate grid coordinates for quick lookup
+  const homingGridCoords = new Map();
   
-  // Get player bullets and AI bullets
+  for (let i = start; i < end; i++) {
+    const bullet = activeBullets[i];
+    if (!bullet.active || !gameState.players[bullet.owner]) continue;
+    
+    // Only process every nth bullet and only player bullets
+    if (i % BULLET_HOMING_CHECK_INTERVAL !== 0) continue;
+
+    const gridX = Math.floor(bullet.x / GRID_SIZE);
+    const gridY = Math.floor(bullet.y / GRID_SIZE);
+    
+    // Quick check if any AI bullets are in range using grid cell bounds
+    let hasNearbyTargets = false;
+    const searchRadius = Math.ceil(BULLET_HOMING_RANGE / GRID_SIZE);
+    
+    // First do a quick check of adjacent cells
+    for (let dx = -1; dx <= 1 && !hasNearbyTargets; dx++) {
+      for (let dy = -1; dy <= 1 && !hasNearbyTargets; dy++) {
+        const key = `${gridX + dx},${gridY + dy}`;
+        const cell = grid[key];
+        if (cell && cell.aiBullets > 0) {
+          // Quick bounds check
+          const bulletDistX = Math.max(0, Math.abs(bullet.x - (cell.bounds.minX + cell.bounds.maxX) / 2) - GRID_SIZE/2);
+          const bulletDistY = Math.max(0, Math.abs(bullet.y - (cell.bounds.minY + cell.bounds.maxY) / 2) - GRID_SIZE/2);
+          if (bulletDistX * bulletDistX + bulletDistY * bulletDistY <= BULLET_HOMING_RANGE * BULLET_HOMING_RANGE) {
+            hasNearbyTargets = true;
+          }
+        }
+      }
+    }
+
+    // Skip detailed search if no nearby targets
+    if (!hasNearbyTargets) continue;
+
+    // Do detailed search only if nearby targets exist
+    let nearestDist = BULLET_HOMING_RANGE * BULLET_HOMING_RANGE;
+    let target = null;
+
+    // Search in expanding squares until we find a target
+    for (let radius = 0; radius <= 1; radius++) {
+      for (let dx = -radius; dx <= radius; dx++) {
+        for (let dy = -radius; dy <= radius; dy++) {
+          const key = `${gridX + dx},${gridY + dy}`;
+          const cell = grid[key];
+          if (!cell || cell.aiBullets === 0) continue;
+
+          // Check bullets in this cell
+          const bullets = cell.bullets;
+          for (let j = 0; j < bullets.length; j++) {
+            const potentialTarget = bullets[j];
+            if (!potentialTarget.active || gameState.players[potentialTarget.owner]) continue;
+
+            const targetDx = potentialTarget.x - bullet.x;
+            const targetDy = potentialTarget.y - bullet.y;
+            const distSq = targetDx * targetDx + targetDy * targetDy;
+            
+            if (distSq < nearestDist) {
+              nearestDist = distSq;
+              target = potentialTarget;
+              if (distSq < 2500) break; // Very close target found
+            }
+          }
+          if (nearestDist < 2500) break;
+        }
+        if (nearestDist < 2500) break;
+      }
+      if (nearestDist < 2500) break;
+    }
+    
+    if (target) {
+      const dx = target.x - bullet.x;
+      const dy = target.y - bullet.y;
+      const desiredAngle = Math.atan2(dy, dx);
+      
+      let angleDiff = desiredAngle - bullet.angle;
+      if (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
+      if (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
+      
+      bullet.angle += Math.sign(angleDiff) * 
+                     Math.min(Math.abs(angleDiff), BULLET_HOMING_STRENGTH);
+    }
+  }
+  profiler.endProfile('bullet_homing');
+
+  // Handle bullet-bullet collisions independently
+  profiler.startProfile('bullet_bullet_filter');
   const playerBulletsForCollision = bulletPool.getActiveBullets().filter(b => gameState.players[b.owner]);
   const aiBulletsForCollision = bulletPool.getActiveBullets().filter(b => !gameState.players[b.owner]);
+  profiler.endProfile('bullet_bullet_filter');
   
-  // Build grid for AI bullets to optimize collision checks
+  profiler.startProfile('bullet_bullet_build_grid');
   const aiBulletGrid = {};
   aiBulletsForCollision.forEach(bullet => {
     const key = `${Math.floor(bullet.x / GRID_SIZE)},${Math.floor(bullet.y / GRID_SIZE)}`;
     if (!aiBulletGrid[key]) aiBulletGrid[key] = [];
     aiBulletGrid[key].push(bullet);
   });
+  profiler.endProfile('bullet_bullet_build_grid');
   
-  // Check player bullets against AI bullets using grid
+  profiler.startProfile('bullet_bullet_check');
   for (let i = playerBulletsForCollision.length - 1; i >= 0; i--) {
     const playerBullet = playerBulletsForCollision[i];
-    if (!playerBullet.active) continue; // Skip if already destroyed
+    if (!playerBullet.active) continue;
     
     const gridX = Math.floor(playerBullet.x / GRID_SIZE);
     const gridY = Math.floor(playerBullet.y / GRID_SIZE);
     let collisionFound = false;
     
-    // Only check immediate neighboring cells
     for (let dx = -1; dx <= 1 && !collisionFound; dx++) {
       for (let dy = -1; dy <= 1 && !collisionFound; dy++) {
         const checkKey = `${gridX + dx},${gridY + dy}`;
@@ -362,21 +486,17 @@ function updateGame() {
         if (nearbyAiBullets) {
           for (let j = nearbyAiBullets.length - 1; j >= 0; j--) {
             const aiBullet = nearbyAiBullets[j];
-            if (!aiBullet.active) continue;  // Skip if already destroyed
+            if (!aiBullet.active) continue;
             
             const dx = playerBullet.x - aiBullet.x;
             const dy = playerBullet.y - aiBullet.y;
             const distSquared = dx * dx + dy * dy;
             
-            if (distSquared < 100) { // 10^2 for bullet collision radius
-              // Release both bullets
+            if (distSquared < 100) {
               bulletPool.release(playerBullet);
               bulletPool.release(aiBullet);
-              
-              // Remove AI bullet from grid array
               nearbyAiBullets.splice(j, 1);
               
-              // Create explosion effect
               io.emit("explosion", {
                 x: (playerBullet.x + aiBullet.x) / 2,
                 y: (playerBullet.y + aiBullet.y) / 2,
@@ -392,8 +512,7 @@ function updateGame() {
       }
     }
   }
-  
-  profiler.endProfile('bullet-bullet-collisions');
+  profiler.endProfile('bullet_bullet_check');
 
   // Profile AI movement/behavior
   profiler.startProfile('ai-behavior');
@@ -413,7 +532,7 @@ function updateGame() {
       
       if (isOnScreen) {
         // Limit the number of nearby bots we check
-        const maxNearbyBotsToCheck = 5;
+        const maxNearbyBotsToCheck = 8; // Increased from 5 for better flocking
         const nearbyBots = gameState.bots
           .filter((b, idx) => b.id !== bot.id && 
                     Math.hypot(b.x - bot.x, b.y - bot.y) < BOID_RADIUS)
@@ -421,7 +540,7 @@ function updateGame() {
 
         if (nearbyBots.length > 0) {
           let separationX = 0, separationY = 0;
-          let avgAngle = 0;
+          let avgVelX = 0, avgVelY = 0;
           let centerX = 0, centerY = 0;
           
           const nearbyBotsCount = nearbyBots.length;
@@ -430,56 +549,77 @@ function updateGame() {
             const dx = bot.x - nb.x;
             const dy = bot.y - nb.y;
             const dist = Math.hypot(dx, dy);
+            
+            // Enhanced separation - stronger at close range
+            const separationFactor = (BOID_RADIUS - dist) / BOID_RADIUS;
             if (dist > 0) {
-              separationX += dx / dist;
-              separationY += dy / dist;
+              separationX += (dx / dist) * separationFactor;
+              separationY += (dy / dist) * separationFactor;
             }
-            avgAngle += nb.angle;
+
+            // Alignment - use velocity instead of just angle
+            avgVelX += Math.cos(nb.angle);
+            avgVelY += Math.sin(nb.angle);
+            
+            // Cohesion
             centerX += nb.x;
             centerY += nb.y;
           }
 
-          avgAngle /= nearbyBotsCount;
+          // Normalize vectors
+          const separationAngle = Math.atan2(separationY, separationX);
+          
+          // Average velocity for alignment
+          avgVelX /= nearbyBotsCount;
+          avgVelY /= nearbyBotsCount;
+          const alignmentAngle = Math.atan2(avgVelY, avgVelX);
+          
+          // Center of mass for cohesion
           centerX /= nearbyBotsCount;
           centerY /= nearbyBotsCount;
-
-          const separationAngle = Math.atan2(separationY, separationX);
           const cohesionAngle = Math.atan2(centerY - bot.y, centerX - bot.x);
 
+          // Combine all influences with dynamic weights
+          const distToTarget = target ? Math.hypot(target.y - bot.y, target.x - bot.x) : Infinity;
+          const targetPriority = Math.min(1, 1000 / (distToTarget + 1)); // Higher weight when closer to target
+          
           const boidsInfluence = (
             separationAngle * SEPARATION_WEIGHT +
-            avgAngle * ALIGNMENT_WEIGHT +
+            alignmentAngle * ALIGNMENT_WEIGHT +
             cohesionAngle * COHESION_WEIGHT
           ) / (SEPARATION_WEIGHT + ALIGNMENT_WEIGHT + COHESION_WEIGHT);
 
-          desiredAngle = (desiredAngle * PURSUIT_WEIGHT + boidsInfluence) / (PURSUIT_WEIGHT + 1);
+          // Blend between flocking and pursuit based on target distance
+          desiredAngle = (desiredAngle * (PURSUIT_WEIGHT * targetPriority) + 
+                         boidsInfluence * (1 - targetPriority * 0.5)) / 
+                         (PURSUIT_WEIGHT * targetPriority + (1 - targetPriority * 0.5));
+        }
+
+        let angleDiff = desiredAngle - bot.angle;
+        if (angleDiff > Math.PI) angleDiff -= 2 * Math.PI;
+        if (angleDiff < -Math.PI) angleDiff += 2 * Math.PI;
+        bot.angle += Math.sign(angleDiff) * Math.min(Math.abs(angleDiff), TURN_RATE);
+
+        // Reduced shooting logic checks
+        if (isOnScreen && Math.abs(angleDiff) < SHOOT_ANGLE && 
+            now - bot.lastShot > BOT_FIRE_COOLDOWN && 
+            Math.random() < BOT_FIRE_RATE) {
+          const bullet = bulletPool.obtain();
+          bullet.x = bot.x;
+          bullet.y = bot.y;
+          bullet.angle = bot.angle;
+          bullet.color = "#FF0000";
+          bullet.owner = bot.id;
+          bullet.speed = BULLET_SPEED;
+          bot.lastShot = now;
         }
       }
 
-      let angleDiff = desiredAngle - bot.angle;
-      if (angleDiff > Math.PI) angleDiff -= 2 * Math.PI;
-      if (angleDiff < -Math.PI) angleDiff += 2 * Math.PI;
-      bot.angle += Math.sign(angleDiff) * Math.min(Math.abs(angleDiff), TURN_RATE);
-
-      // Reduced shooting logic checks
-      if (isOnScreen && Math.abs(angleDiff) < SHOOT_ANGLE && 
-          now - bot.lastShot > BOT_FIRE_COOLDOWN && 
-          Math.random() < BOT_FIRE_RATE) {
-        const bullet = bulletPool.obtain();
-        bullet.x = bot.x;
-        bullet.y = bot.y;
-        bullet.angle = bot.angle;
-        bullet.color = "#FF0000";
-        bullet.owner = bot.id;
-        bullet.speed = BULLET_SPEED;
-        bot.lastShot = now;
+      bot.x += Math.cos(bot.angle) * BOT_SPEED;
+      bot.y += Math.sin(bot.angle) * BOT_SPEED;
+      if (bot.x < -50 || bot.x > gameWidth + 50 || bot.y < -50 || bot.y > gameHeight + 50) {
+        gameState.bots.splice(i, 1);
       }
-    }
-
-    bot.x += Math.cos(bot.angle) * BOT_SPEED;
-    bot.y += Math.sin(bot.angle) * BOT_SPEED;
-    if (bot.x < -50 || bot.x > gameWidth + 50 || bot.y < -50 || bot.y > gameHeight + 50) {
-      gameState.bots.splice(i, 1);
     }
   }
   profiler.endProfile('ai-behavior');
@@ -606,7 +746,7 @@ function updateGame() {
 // Add profiling output every 5 seconds
 setInterval(() => {
   console.log(profiler.formatMetrics());
-}, 5000);
+}, 1000);
 
 // Change server update rate to 60fps, but send updates at 30fps
 setInterval(updateGame, 1000 / 60);

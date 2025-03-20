@@ -28,7 +28,7 @@ const SPEED_BOOST_MULTIPLIER = 1.5;
 
 // Auto-shooter settings
 const AUTO_SHOOTER_RANGE = 400; // Range to detect enemies
-const AUTO_SHOOTER_COOLDOWN = 500; // Cooldown between shots (ms)
+const AUTO_SHOOTER_COOLDOWN = 200; // Reduced from 500ms to 200ms for faster firing
 const AUTO_SHOOTER_SPEED = 6; // Bullet speed for auto-shooter
 
 class PickupSystem {

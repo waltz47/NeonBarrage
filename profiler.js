@@ -3,7 +3,7 @@ class Profiler {
     this.metrics = {};
     this.currentFrame = 0;
     this.frameMetrics = {};
-    this.FRAMES_TO_TRACK = 60; // Track 1 second worth of frames at 60fps
+    this.FRAMES_TO_TRACK = 600; // Track 10 seconds worth of frames at 60fps
     this.sectionStack = []; // Track nested sections
     this.currentSection = null;
   }
@@ -133,7 +133,25 @@ class Profiler {
     
     // Process each root section and its children
     for (const section of rootSections) {
-      output += this.formatSection(section, metrics, 0);
+      const data = metrics[section];
+      output += `\n${section}:\n`;
+      output += `  CPU Load: ${data.msPerSecond}ms/sec\n`;
+      output += `  Avg: ${data.avgTime}ms\n`;
+      output += `  Min: ${data.minTime}ms\n`;
+      output += `  Max: ${data.maxTime}ms\n`;
+      output += `  Calls: ${data.calls}\n`;
+      
+      // Sort and process children
+      if (data.children && data.children.size > 0) {
+        output += "  Subsections:\n";
+        const children = [...data.children].sort((a, b) => 
+          parseFloat(metrics[b].msPerSecond) - parseFloat(metrics[a].msPerSecond)
+        );
+        
+        for (const child of children) {
+          output += this.formatSection(child, metrics, 2);
+        }
+      }
     }
     
     return output;
@@ -143,21 +161,26 @@ class Profiler {
     const data = metrics[sectionPath];
     const indent = '  '.repeat(depth);
     
-    let output = `\n${indent}${sectionPath.split('/').pop()}:\n`;
+    // Extract just the section name from the full path
+    const sectionName = sectionPath.split('/').pop();
+    
+    let output = `\n${indent}${sectionName}:\n`;
     output += `${indent}  CPU Load: ${data.msPerSecond}ms/sec\n`;
     output += `${indent}  Avg: ${data.avgTime}ms\n`;
     output += `${indent}  Min: ${data.minTime}ms\n`;
     output += `${indent}  Max: ${data.maxTime}ms\n`;
     output += `${indent}  Calls: ${data.calls}\n`;
     
-    // Sort children by ms per second
-    const children = [...data.children].sort((a, b) => 
-      parseFloat(metrics[b].msPerSecond) - parseFloat(metrics[a].msPerSecond)
-    );
-    
-    // Process children
-    for (const child of children) {
-      output += this.formatSection(child, metrics, depth + 1);
+    // Sort children by ms per second and ensure they're displayed
+    if (data.children && data.children.size > 0) {
+      const children = [...data.children].sort((a, b) => 
+        parseFloat(metrics[b].msPerSecond) - parseFloat(metrics[a].msPerSecond)
+      );
+      
+      output += `${indent}  Subsections:\n`;
+      for (const child of children) {
+        output += this.formatSection(child, metrics, depth + 1);
+      }
     }
     
     return output;
