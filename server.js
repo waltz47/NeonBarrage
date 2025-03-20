@@ -329,6 +329,72 @@ function updateGame() {
   }
   profiler.endProfile('bullet-collisions');
 
+  // Profile bullet vs bullet collision
+  profiler.startProfile('bullet-bullet-collisions');
+  
+  // Get player bullets and AI bullets
+  const playerBulletsForCollision = bulletPool.getActiveBullets().filter(b => gameState.players[b.owner]);
+  const aiBulletsForCollision = bulletPool.getActiveBullets().filter(b => !gameState.players[b.owner]);
+  
+  // Build grid for AI bullets to optimize collision checks
+  const aiBulletGrid = {};
+  aiBulletsForCollision.forEach(bullet => {
+    const key = getGridKey(bullet.x, bullet.y);
+    if (!aiBulletGrid[key]) aiBulletGrid[key] = [];
+    aiBulletGrid[key].push(bullet);
+  });
+  
+  // Check player bullets against AI bullets using grid
+  for (let i = playerBulletsForCollision.length - 1; i >= 0; i--) {
+    const playerBullet = playerBulletsForCollision[i];
+    const gridKey = getGridKey(playerBullet.x, playerBullet.y);
+    
+    // Check nearby grid cells
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dy = -1; dy <= 1; dy++) {
+        const checkKey = `${Math.floor(playerBullet.x / GRID_SIZE) + dx},${Math.floor(playerBullet.y / GRID_SIZE) + dy}`;
+        const nearbyAiBullets = aiBulletGrid[checkKey];
+        
+        if (nearbyAiBullets) {
+          for (let j = nearbyAiBullets.length - 1; j >= 0; j--) {
+            const aiBullet = nearbyAiBullets[j];
+            if (!aiBullet.active) continue;  // Skip if already destroyed
+            
+            const dx = playerBullet.x - aiBullet.x;
+            const dy = playerBullet.y - aiBullet.y;
+            const distSquared = dx * dx + dy * dy;
+            
+            if (distSquared < 100) { // 10^2 for bullet collision radius
+              // Release both bullets
+              bulletPool.release(playerBullet);
+              bulletPool.release(aiBullet);
+              
+              // Remove AI bullet from grid array
+              nearbyAiBullets.splice(j, 1);
+              
+              // Create explosion effect
+              io.emit("explosion", {
+                x: (playerBullet.x + aiBullet.x) / 2,
+                y: (playerBullet.y + aiBullet.y) / 2,
+                color: `${NEON_PALETTE.cyan}, ${NEON_PALETTE.blue}, ${NEON_PALETTE.purple}`,
+                size: 15  // Smaller explosion for bullet collisions
+              });
+              
+              break; // Exit inner loop since bullet is destroyed
+            }
+          }
+          
+          // If player bullet was destroyed, exit outer loop
+          if (!playerBullet.active) break;
+        }
+      }
+      // If player bullet was destroyed, exit outermost loop
+      if (!playerBullet.active) break;
+    }
+  }
+  
+  profiler.endProfile('bullet-bullet-collisions');
+
   // Profile AI movement/behavior
   profiler.startProfile('ai-behavior');
   // Move bots, shoot, and clean up out-of-bounds
