@@ -664,10 +664,13 @@ function updateMovement() {
   const deltaTime = (now - lastUpdateTime) / (1000 / 60); // Normalize to 60fps
   lastUpdateTime = now;
   
-  // Base movement speed (pixels per frame at 60fps)
+  // Get player's current speed from server state, with fallback to base speed
+  const serverPlayer = gameState.players[socket.id];
   const baseSpeed = 8;
+  const currentSpeed = (serverPlayer && serverPlayer.speed) || baseSpeed;
+  
   // Apply frame rate independence
-  const speed = baseSpeed * Math.min(deltaTime, 2); // Cap at 2x to prevent huge jumps
+  const speed = currentSpeed * Math.min(deltaTime, 2); // Cap at 2x to prevent huge jumps
   
   // Calculate movement vector
   let dx = 0, dy = 0;
