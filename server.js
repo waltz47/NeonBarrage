@@ -1,6 +1,7 @@
 const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
+const { PickupSystem } = require("./pickup-server");
 
 const app = express();
 const server = http.createServer(app);
@@ -14,6 +15,14 @@ const gameState = {
   bots: [],
   frameCount: 0
 };
+
+// Initialize pickup system
+const pickupSystem = new PickupSystem(io, gameState);
+
+// Make sure pickup system is initialized
+console.log("Initializing pickup system");
+pickupSystem.init();
+console.log("Pickup system initialized successfully");
 
 const BOT_SPAWN_RATE = 2;
 const BULLET_SPEED = 5; // Base bullet speed for bots
@@ -373,6 +382,9 @@ function updateGame() {
         // Add score for the player who killed the bot
         if (gameState.players[bullet.owner]) {
           gameState.players[bullet.owner].score++;
+          
+          // Try to spawn a pickup when a bot is destroyed
+          pickupSystem.trySpawnPickup({ x: bot.x, y: bot.y });
         }
         
         io.emit("explosion", { 
@@ -381,6 +393,7 @@ function updateGame() {
           color: `${NEON_PALETTE.orange}, ${NEON_PALETTE.red}, ${NEON_PALETTE.yellow}`,
           size: 30
         });
+        io.emit("botDestroyed", { x: bot.x, y: bot.y });
         break;
       }
     }
@@ -519,6 +532,9 @@ function updateGame() {
   if (gameState.frameCount % 2 === 0) {
     io.emit("update", gameState);
   }
+
+  // Update pickup system each frame
+  pickupSystem.update();
 }
 
 // Change server update rate to 60fps, but send updates at 30fps
@@ -531,6 +547,7 @@ io.on("connection", (socket) => {
   const UPGRADED_SHOOT_COOLDOWN = 50; // Reduced from 150
 
   socket.on("login", (username) => {
+    console.log("Login event received with username:", username);
     const colorIndex = Object.keys(gameState.players).length % PLAYER_COLORS.length;
     
     // Set initial player position
@@ -556,6 +573,7 @@ io.on("connection", (socket) => {
       position: { x: initialX, y: initialY },
       color: PLAYER_COLORS[colorIndex]
     });
+    console.log("Login-confirm event emitted with position and color:", { x: initialX, y: initialY }, PLAYER_COLORS[colorIndex]);
   });
 
   socket.on("move", (move) => {
@@ -693,12 +711,44 @@ io.on("connection", (socket) => {
     socket.emit("pong");
   });
 
+  socket.on("collectPickup", (data) => {
+    if (data.pickupId) {
+      pickupSystem.collectPickup(socket.id, data.pickupId);
+    }
+  });
+
+  socket.on("pickupEffect", (data) => {
+    // This is mostly for synchronization and feedback
+    // The server is the authority on active effects
+    if (!data.type) return;
+    
+    const player = gameState.players[socket.id];
+    if (!player) return;
+    
+    // Most effect logic is handled in the pickupSystem
+    // This just acknowledges the client's notification
+    console.log(`Player ${player.username} ${data.active ? 'activated' : 'deactivated'} ${data.type}`);
+  });
+
   socket.on("disconnect", () => {
     delete gameState.players[socket.id];
     console.log("Player disconnected:", socket.id);
     // Decrease difficulty when a player dies/disconnects
     difficultyLevel = Math.max(MIN_DIFFICULTY, difficultyLevel - DIFFICULTY_DECREASE_ON_DEATH);
     adjustDifficulty();
+    pickupSystem.cleanupPlayer(socket.id);
+  });
+
+  // Special debug commands
+  socket.on("spawnTestPickup", (position) => {
+    console.log("🧪 DEBUG: Manual test pickup spawn requested", position);
+    // Force spawn a pickup (bypass random check)
+    if (!position || typeof position.x === 'undefined') {
+      // Default to center if no position provided
+      position = { x: gameWidth / 2, y: gameHeight / 2 };
+    }
+    const pickup = pickupSystem.spawnPickup(position);
+    console.log("🧪 DEBUG: Test pickup spawned", pickup);
   });
 });
 

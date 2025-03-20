@@ -4,16 +4,127 @@
   <meta charset="UTF-8">
   <title>Neon Barrage</title>
   <link rel="stylesheet" href="style.css">
-  
+  <style>
+    #debugControls {
+      position: fixed;
+      bottom: 10px;
+      right: 10px;
+      background: rgba(0,0,0,0.7);
+      padding: 10px;
+      border-radius: 5px;
+      z-index: 1000;
+      color: white;
+      display: none;
+    }
+    #debugControls button {
+      background: #ff3300;
+      color: white;
+      border: none;
+      padding: 5px 10px;
+      margin: 5px;
+      cursor: pointer;
+      border-radius: 3px;
+    }
+    #login {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      text-align: center;
+      background: rgba(0, 0, 0, 0.8);
+      padding: 20px;
+      border-radius: 10px;
+      border: 1px solid #333;
+    }
+    #login input {
+      padding: 10px;
+      margin: 10px;
+      width: 200px;
+      background: rgba(255, 255, 255, 0.1);
+      border: 1px solid #444;
+      color: white;
+      border-radius: 5px;
+    }
+    #login input:disabled {
+      background: rgba(255, 255, 255, 0.05);
+      color: #666;
+    }
+    #login button {
+      padding: 10px 20px;
+      margin: 10px;
+      background: #0066ff;
+      color: white;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    #login button:hover {
+      background: #0052cc;
+    }
+    #login button:disabled {
+      background: #333;
+      cursor: not-allowed;
+    }
+  </style>
 </head>
 <body>
   <a target="_blank" href="https://jam.pieter.com" style="font-family: 'system-ui', sans-serif; position: fixed; bottom: -1px; right: -1px; padding: 7px; font-size: 14px; font-weight: bold; background: #fff; color: #000; text-decoration: none; z-index: 10; border-top-left-radius: 12px; z-index: 10000; border: 1px solid #fff;">🕹️ Vibe Jam 2025</a>
   <div id="login">
     <input type="text" id="username" placeholder="Enter username" maxlength="12">
-    <button onclick="startGame()">Join Game</button>
+    <button onclick="startGame()" id="joinButton" disabled>Join Game</button>
   </div>
   <canvas id="gameCanvas" width="800" height="600"></canvas>
-  <script src="/socket.io/socket.io.js"></script>
+  
+  <!-- Debug Controls -->
+  <div id="debugControls">
+    <div>DEBUG CONTROLS</div>
+    <button onclick="window.spawnTestPickup(window.innerWidth/2, window.innerHeight/2)">Spawn Pickup</button>
+    <button onclick="console.log(window._debugPickups())">Log Pickups</button>
+    <button onclick="window.pickupSystem.debug()">Pickup System Status</button>
+    <button onclick="location.reload()">Reload Page</button>
+    <div>Press Ctrl+P to spawn pickups at player position</div>
+    <div>Press Ctrl+D to hide/show this panel</div>
+  </div>
+  
+  <script>
+    // Initialize these before loading other scripts
+    window.onSocketError = function(error) {
+      console.error('Socket.IO Error:', error);
+      const usernameInput = document.getElementById('username');
+      const joinButton = document.getElementById('joinButton');
+      usernameInput.placeholder = 'Cannot connect to server...';
+      usernameInput.disabled = true;
+      joinButton.disabled = true;
+    };
+
+    window.onSocketConnect = function() {
+      console.log('Socket.IO Connected');
+      const usernameInput = document.getElementById('username');
+      const joinButton = document.getElementById('joinButton');
+      usernameInput.placeholder = 'Enter username';
+      usernameInput.disabled = false;
+      joinButton.disabled = false;
+    };
+  </script>
+
+  <script src="/socket.io/socket.io.js" onerror="window.onSocketError(new Error('Failed to load Socket.IO client'))"></script>
+  <script>
+    // Initialize shared game state
+    window.localPlayer = { x: window.innerWidth / 2, y: window.innerHeight / 2, angle: 0 };
+    window.gameState = { players: {}, bullets: [], bots: [] };
+  </script>
   <script src="client.js"></script>
+  <script src="pickups.js"></script>
+  
+  <script>
+    // Show debug controls when D key is pressed with Ctrl
+    document.addEventListener('keydown', function(e) {
+      if (e.ctrlKey && e.key === 'd') {
+        const debugControls = document.getElementById('debugControls');
+        debugControls.style.display = debugControls.style.display === 'none' ? 'block' : 'none';
+      }
+    });
+  </script>
 </body>
 </html>

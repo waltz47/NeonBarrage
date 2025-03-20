@@ -1,12 +1,119 @@
-const socket = io();
+// Initialize socket with error handling
+let socket;
+try {
+  socket = io({
+    reconnection: true,
+    reconnectionDelay: 1000,
+    reconnectionDelayMax: 5000,
+    reconnectionAttempts: 5
+  });
+  // Make socket available globally
+  window.socket = socket;
+} catch (error) {
+  console.error("Failed to initialize socket:", error);
+  window.onSocketError(error);
+}
+
 const canvas = document.getElementById("gameCanvas");
 const ctx = canvas.getContext("2d", { alpha: false });
 let gameStarted = false;
+
+// Initialize input elements
+const usernameInput = document.getElementById("username");
+const joinButton = document.getElementById("joinButton");
+
+// Only disable join button by default, leave input enabled
+joinButton.disabled = true;
 
 // Set canvas to viewport size
 canvas.width = window.innerWidth;
 canvas.height = window.innerHeight;
 socket.emit("setDimensions", { width: canvas.width, height: canvas.height });
+
+// Logging socket connection status
+socket.on('connect', () => {
+  console.log("%c🔌 SOCKET CONNECTED", "background: green; color: white");
+  console.log("Socket ID:", socket.id);
+  joinButton.disabled = false;
+  window.onSocketConnect();
+});
+
+socket.on('connect_error', (error) => {
+  console.error("%c❌ SOCKET CONNECTION ERROR", "background: red; color: white", error);
+  usernameInput.placeholder = "Cannot connect to server...";
+  usernameInput.disabled = true;
+  joinButton.disabled = true;
+  window.onSocketError(error);
+});
+
+socket.on('disconnect', (reason) => {
+  console.warn("%c🔌 SOCKET DISCONNECTED", "background: orange; color: black", reason);
+  usernameInput.placeholder = "Connection lost...";
+  usernameInput.disabled = true;
+  joinButton.disabled = true;
+});
+
+// Check if pickup system is available, and create a fallback if not
+function checkPickupSystem() {
+  // First check if the real system is available - it should be initialized with a placeholder at the top of pickups.js
+  if (window.pickupSystem) {
+    // Multiple checks to ensure it's the real system
+    if (window.pickupSystem._isRealSystem === true || 
+        window.pickupSystem._isFallback === false ||
+        typeof window.pickupSystem.debug === 'function') {
+      console.log("✅ Real pickup system found!");
+      return true;
+    }
+  }
+  
+  console.error("❌ PICKUP SYSTEM NOT FOUND - Creating fallback system");
+  console.error("Current pickupSystem:", window.pickupSystem);
+  
+  // Create a bare-bones fallback pickup system
+  window.pickupSystem = {
+    pickups: [],
+    _isFallback: true,
+    
+    drawPickups: function(ctx) {
+      console.warn("Using fallback drawPickups - real system not loaded!");
+      
+      // Draw a warning indicator
+      ctx.fillStyle = 'red';
+      ctx.font = '20px Arial';
+      ctx.fillText('PICKUP SYSTEM NOT LOADED!', 20, canvas.height - 20);
+      
+      // Draw any pickups in the fallback array
+      if (this.pickups && this.pickups.length > 0) {
+        this.pickups.forEach(pickup => {
+          ctx.fillStyle = 'red';
+          ctx.beginPath();
+          ctx.arc(pickup.x, pickup.y, 30, 0, Math.PI * 2);
+          ctx.fill();
+          
+          ctx.fillStyle = 'white';
+          ctx.fillText(pickup.type, pickup.x - 40, pickup.y);
+        });
+      }
+    },
+    
+    checkPickupCollisions: function() {
+      console.warn("Using fallback checkPickupCollisions - real system not loaded!");
+    }
+  };
+  
+  // Create a test socket listener for pickups in the fallback
+  socket.on('pickupSpawned', (pickup) => {
+    console.warn("Pickup spawned event caught by FALLBACK system:", pickup);
+    window.pickupSystem.pickups.push(pickup);
+  });
+  
+  socket.on('pickupDespawned', (pickupId) => {
+    console.warn("Pickup despawned event caught by FALLBACK system:", pickupId);
+    window.pickupSystem.pickups = window.pickupSystem.pickups.filter(p => p.id !== pickupId);
+  });
+  
+  return false;
+}
 
 // Local player state
 let localPlayer = { x: canvas.width / 2, y: canvas.height / 2, angle: 0 };
@@ -17,14 +124,38 @@ const MOVE_THROTTLE = 16; // Reduced from 50ms to ~16ms (60fps) for smoother upd
 
 function startGame() {
   const username = document.getElementById("username").value.trim();
-  if (username) {
-    socket.emit("login", username);
-    document.getElementById("login").style.display = "none";
-    canvas.style.display = "block";
-    canvas.focus();
-    gameStarted = true;
-    requestAnimationFrame(gameLoop);
+  if (!username) {
+    alert("Please enter a username");
+    return;
   }
+  
+  if (!socket.connected) {
+    console.error("Socket not connected - cannot join game");
+    alert("Cannot connect to game server. Please try again in a moment.");
+    return;
+  }
+  
+  console.log("🎮 Starting game with username:", username);
+  socket.emit("login", username);
+  console.log("🔄 Login event emitted");
+  
+  document.getElementById("login").style.display = "none";
+  canvas.style.display = "block";
+  canvas.focus();
+  gameStarted = true;
+  
+  // Check that the pickup system is available
+  const pickupSystemReady = checkPickupSystem();
+  
+  // Log the status
+  if (pickupSystemReady) {
+    console.log("✅ Game started with pickup system ready");
+  } else {
+    console.warn("⚠️ Game started with fallback pickup system");
+  }
+  
+  console.log("🎬 Starting game loop");
+  requestAnimationFrame(gameLoop);
 }
 
 const keys = { w: false, a: false, s: false, d: false };
@@ -345,6 +476,44 @@ function draw() {
     const upgradeText = upgradeTexts[player.upgrade] || upgradeTexts[2];
     ctx.fillText(`Upgrade: ${upgradeText}`, 10, 60);
     ctx.fillText(`Kills to next: ${50 - (player.score % 50)}`, 10, 80);
+    
+    // Draw active pickup list in bottom left
+    if (window.pickupSystem && window.activePickups) {
+      const activePickupKeys = Object.keys(window.activePickups);
+      
+      if (activePickupKeys.length > 0) {
+        // Draw background panel
+        ctx.fillStyle = "rgba(0, 10, 30, 0.7)";
+        ctx.fillRect(10, canvas.height - 110, 200, 100);
+        
+        // Draw header
+        ctx.fillStyle = "#ffffff";
+        ctx.font = "bold 14px Arial";
+        ctx.fillText("ACTIVE PICKUPS", 20, canvas.height - 90);
+        
+        // Draw each active pickup
+        let y = canvas.height - 70;
+        activePickupKeys.forEach(type => {
+          const pickupInfo = window.PICKUP_TYPES[type];
+          if (pickupInfo) {
+            const timeActive = Date.now() - window.activePickups[type].activatedAt;
+            const duration = pickupInfo.duration || 5000;
+            const timeRemaining = Math.max(0, (duration - timeActive) / 1000).toFixed(1);
+            
+            ctx.fillStyle = pickupInfo.color;
+            ctx.beginPath();
+            ctx.arc(25, y, 8, 0, Math.PI * 2);
+            ctx.fill();
+            
+            ctx.fillStyle = "#ffffff";
+            ctx.font = "14px Arial";
+            ctx.fillText(`${pickupInfo.description} (${timeRemaining}s)`, 40, y + 5);
+            
+            y += 20;
+          }
+        });
+      }
+    }
   }
 
   // Draw the scoreboard from cache if available, or create it if needed
@@ -356,6 +525,11 @@ function draw() {
   // Draw the cached scoreboard in the top-right corner
   if (scoreboardCache) {
     ctx.drawImage(scoreboardCache, canvas.width - scoreboardCache.width, 0);
+  }
+
+  // Draw pickups if the system is available
+  if (window.pickupSystem) {
+    window.pickupSystem.drawPickups(ctx);
   }
 }
 
@@ -534,7 +708,7 @@ function updateMovement() {
   }
 }
 
-// Replace gameLoop function for better performance and smoother animation
+// Game loop function
 function gameLoop() {
   if (!gameStarted) return;
   
@@ -561,7 +735,18 @@ function gameLoop() {
 
   updateMovement();
   updateScoreboard(); // Check if scoreboard needs updating based on player count
+  
+  // Draw the scene
   draw();
+  
+  // Always share the gameState and localPlayer with the window object
+  window.gameState = gameState;
+  window.localPlayer = localPlayer;
+  
+  // Share the gameState and localPlayer with the pickup system
+  if (window.pickupSystem) {
+    window.pickupSystem.checkPickupCollisions();
+  }
   
   // Use requestAnimationFrame for smoother animation
   requestAnimationFrame(gameLoop);
@@ -577,10 +762,11 @@ canvas.setAttribute("tabindex", "0");
 
 // Add this to the socket.on("login") event that the server might send
 socket.on("login-confirm", (data) => {
+  console.log("🔐 Login confirmed by server with data:", data);
   if (data && data.position) {
     // Initialize player position with server data
     localPlayer.x = data.position.x;
     localPlayer.y = data.position.y;
-    console.log("Player position initialized:", localPlayer);
+    console.log("📍 Player position initialized:", localPlayer);
   }
 });
