@@ -158,6 +158,19 @@ class PickupSystem {
     
     // Apply the effect
     const player = this.gameState.players[playerId];
+    if (!player) return false;
+
+    // Initialize player's activePickups if needed
+    if (!player.activePickups) {
+      player.activePickups = {};
+    }
+    
+    // Update player's activePickups state
+    player.activePickups[type] = {
+      activatedAt: Date.now(),
+      duration: EFFECT_DURATIONS[type]
+    };
+    
     switch (type) {
       case PICKUP_TYPES.SHIELD:
         player.invulnerableUntil = Date.now() + EFFECT_DURATIONS[type];
@@ -184,13 +197,10 @@ class PickupSystem {
         break;
     }
     
-    // Set timeout to remove effect
+    // Set timeout to remove the effect
     this.effectTimers[`${playerId}-${type}`] = setTimeout(() => {
       this.removePickupEffect(playerId, type);
     }, EFFECT_DURATIONS[type]);
-    
-    // Mark effect as active
-    this.playerEffects[playerId][type] = this.playerEffects[playerId][type] || { active: true };
     
     return true;
   }
@@ -225,6 +235,11 @@ class PickupSystem {
           player.speed = this.playerEffects[playerId][type].originalSpeed;
         }
         break;
+    }
+    
+    // Remove effect from player's activePickups
+    if (player.activePickups) {
+      delete player.activePickups[type];
     }
     
     // Remove effect from tracking

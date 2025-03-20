@@ -636,7 +636,8 @@ io.on("connection", (socket) => {
       invulnerableUntil: Date.now() + 5000,
       score: 0,
       lastShot: 0,
-      upgrade: 0 // Track upgrade level: 0=normal, 1=fast, 2=double, 3=triple
+      upgrade: 0, // Track upgrade level: 0=normal, 1=fast, 2=double, 3=triple
+      activePickups: {} // Add activePickups to player state
     };
     
     // Send confirmation with initial position

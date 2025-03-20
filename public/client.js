@@ -355,6 +355,7 @@ function draw() {
   ctx.fillStyle = cachedGradient;
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
+  // Draw particles
   // Reduce shadows and only apply when necessary
   // Draw particles with minimal effects
   ctx.shadowBlur = 0; // Turn off shadow by default
@@ -393,6 +394,14 @@ function draw() {
   // Reset shadow
   ctx.shadowBlur = 0;
 
+  // Draw pickup effects for all players first (so they appear behind players)
+  for (const id in gameState.players) {
+    const player = gameState.players[id];
+    if (player.activePickups) {
+      drawPlayerPickupEffects(player, id === socket.id);
+    }
+  }
+
   // Draw local player
   if (gameState.players[socket.id]) {
     const p = gameState.players[socket.id];
@@ -401,7 +410,7 @@ function draw() {
     ctx.rotate(localPlayer.angle);
     
     // Only apply glow for local player and limit shadow blur
-    ctx.shadowBlur = 5; // Reduced from 10
+    ctx.shadowBlur = 5;
     ctx.shadowColor = p.color;
     
     ctx.fillStyle = p.paused ? "#404040" : p.color;
@@ -416,15 +425,11 @@ function draw() {
     ctx.stroke();
     ctx.restore();
 
-    // Reset shadow for text
     ctx.shadowBlur = 0;
     ctx.fillStyle = "#ffffff";
     ctx.font = "12px Arial";
     ctx.fillText(p.username, localPlayer.x - ctx.measureText(p.username).width / 2, localPlayer.y - 20);
   }
-
-  // Reset shadow
-  ctx.shadowBlur = 0;
 
   // Draw other players without glow - only draw visible players
   for (const id in gameState.players) {
@@ -803,3 +808,145 @@ socket.on("login-confirm", (data) => {
     console.log("📍 Player position initialized:", localPlayer);
   }
 });
+
+// Add new function to draw pickup effects for a player
+function drawPlayerPickupEffects(player, isLocalPlayer) {
+  const now = Date.now();
+  const playerX = isLocalPlayer ? localPlayer.x : player.x;
+  const playerY = isLocalPlayer ? localPlayer.y : player.y;
+
+  // Draw effects for each active pickup
+  Object.entries(player.activePickups).forEach(([type, data]) => {
+    const pickupInfo = window.PICKUP_TYPES[type];
+    if (!pickupInfo) return;
+
+    const timeActive = now - data.activatedAt;
+    const duration = data.duration;
+    const timeRemaining = duration - timeActive;
+    const timePercentage = Math.max(0, Math.min(1, timeRemaining / duration));
+    
+    // Warn when about to expire (last 25%)
+    const isWarning = timePercentage < 0.25;
+    const warningPulse = isWarning ? Math.abs(Math.sin(timeActive * 0.01)) : 1;
+    const pulsePhase = timeActive * 0.005;
+
+    ctx.save();
+    
+    switch(type) {
+      case 'SHIELD':
+        // Shield effect - glowing circle around player
+        ctx.strokeStyle = pickupInfo.color;
+        ctx.lineWidth = 3;
+        ctx.shadowBlur = 10 * warningPulse;
+        ctx.shadowColor = pickupInfo.color;
+        
+        // Pulsing shield
+        const shieldSize = 30 + Math.sin(pulsePhase) * 5;
+        ctx.globalAlpha = 0.7 * warningPulse;
+        ctx.beginPath();
+        ctx.arc(playerX, playerY, shieldSize, 0, Math.PI * 2);
+        ctx.stroke();
+        
+        // Inner shield
+        ctx.globalAlpha = 0.3 * warningPulse;
+        ctx.fillStyle = pickupInfo.color;
+        ctx.beginPath();
+        ctx.arc(playerX, playerY, shieldSize - 10, 0, Math.PI * 2);
+        ctx.fill();
+        
+        // Shield timer arc
+        drawTimerArc(ctx, playerX, playerY, shieldSize + 5, timePercentage);
+        break;
+        
+      case 'AUTO_SHOOTER':
+        // Auto-shooter - orbiting small turrets
+        ctx.fillStyle = pickupInfo.color;
+        ctx.shadowBlur = 5 * warningPulse;
+        ctx.shadowColor = pickupInfo.color;
+        
+        // Timer arc around player
+        drawTimerArc(ctx, playerX, playerY, 45, timePercentage);
+        
+        // Draw 3 orbiting turrets
+        for (let i = 0; i < 3; i++) {
+          const angle = pulsePhase + (i * Math.PI * 2 / 3);
+          const orbitRadius = 40;
+          const orbitX = playerX + Math.cos(angle) * orbitRadius;
+          const orbitY = playerY + Math.sin(angle) * orbitRadius;
+          
+          // Draw turret
+          ctx.globalAlpha = 0.8 * warningPulse;
+          ctx.beginPath();
+          ctx.arc(orbitX, orbitY, 5, 0, Math.PI * 2);
+          ctx.fill();
+          
+          // Draw "barrel" pointing outward
+          ctx.strokeStyle = pickupInfo.color;
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(orbitX, orbitY);
+          ctx.lineTo(
+            orbitX + Math.cos(angle) * 10,
+            orbitY + Math.sin(angle) * 10
+          );
+          ctx.stroke();
+        }
+        break;
+        
+      case 'SPEED_BOOST':
+        // Speed boost - trailing particles
+        ctx.strokeStyle = pickupInfo.color;
+        ctx.lineWidth = 2;
+        ctx.shadowBlur = 5 * warningPulse;
+        ctx.shadowColor = pickupInfo.color;
+        
+        // Timer arc around player
+        drawTimerArc(ctx, playerX, playerY, 45, timePercentage);
+        
+        // Trailing effect
+        const trailLength = 8;
+        for (let i = 0; i < trailLength; i++) {
+          const fadeFactor = 1 - (i / trailLength);
+          ctx.globalAlpha = fadeFactor * 0.7 * warningPulse;
+          
+          const angle = isLocalPlayer ? localPlayer.angle : player.angle;
+          const trailX = playerX - Math.cos(angle) * (i * 7);
+          const trailY = playerY - Math.sin(angle) * (i * 7);
+          
+          ctx.beginPath();
+          ctx.arc(trailX, trailY, 7 * fadeFactor, 0, Math.PI * 2);
+          ctx.stroke();
+          
+          // Add speed lines
+          if (i % 2 === 0) {
+            const perpAngle = angle + Math.PI/2;
+            const lineLength = 15 * fadeFactor;
+            
+            ctx.beginPath();
+            ctx.moveTo(
+              trailX + Math.cos(perpAngle) * lineLength,
+              trailY + Math.sin(perpAngle) * lineLength
+            );
+            ctx.lineTo(
+              trailX - Math.cos(perpAngle) * lineLength,
+              trailY - Math.sin(perpAngle) * lineLength
+            );
+            ctx.stroke();
+          }
+        }
+        break;
+    }
+    
+    ctx.restore();
+  });
+}
+
+function drawTimerArc(ctx, x, y, radius, percentage) {
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(x, y, radius, -Math.PI/2, -Math.PI/2 + (Math.PI * 2 * percentage));
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.restore();
+}
