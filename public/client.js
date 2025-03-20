@@ -32,8 +32,8 @@ socket.emit("setDimensions", { width: canvas.width, height: canvas.height });
 
 // Logging socket connection status
 socket.on('connect', () => {
-  console.log("%c🔌 SOCKET CONNECTED", "background: green; color: white");
-  console.log("Socket ID:", socket.id);
+  // console.log("%c🔌 SOCKET CONNECTED", "background: green; color: white");
+  // console.log("Socket ID:", socket.id);
   joinButton.disabled = false;
   window.onSocketConnect();
 });
@@ -75,7 +75,7 @@ function checkPickupSystem() {
     _isFallback: true,
     
     drawPickups: function(ctx) {
-      console.warn("Using fallback drawPickups - real system not loaded!");
+      // console.warn("Using fallback drawPickups - real system not loaded!");
       
       // Draw a warning indicator
       ctx.fillStyle = 'red';
@@ -97,18 +97,18 @@ function checkPickupSystem() {
     },
     
     checkPickupCollisions: function() {
-      console.warn("Using fallback checkPickupCollisions - real system not loaded!");
+      // console.warn("Using fallback checkPickupCollisions - real system not loaded!");
     }
   };
   
   // Create a test socket listener for pickups in the fallback
   socket.on('pickupSpawned', (pickup) => {
-    console.warn("Pickup spawned event caught by FALLBACK system:", pickup);
+    // console.warn("Pickup spawned event caught by FALLBACK system:", pickup);
     window.pickupSystem.pickups.push(pickup);
   });
   
   socket.on('pickupDespawned', (pickupId) => {
-    console.warn("Pickup despawned event caught by FALLBACK system:", pickupId);
+    // console.warn("Pickup despawned event caught by FALLBACK system:", pickupId);
     window.pickupSystem.pickups = window.pickupSystem.pickups.filter(p => p.id !== pickupId);
   });
   
@@ -211,7 +211,23 @@ canvas.addEventListener("mousedown", (e) => {
   });
 });
 
-let gameState = { players: {}, bullets: [], bots: [] };
+// Initialize gameState with bullet pool structure
+let gameState = {
+  players: {},
+  bullets: {
+    pool: [],
+    getActiveBullets: function() {
+      // If we have a real bullet pool from server, use it
+      if (this.pool && Array.isArray(this.pool)) {
+        return this.pool.filter(b => b && b.active);
+      }
+      // Fallback to empty array if no proper pool exists
+      return [];
+    }
+  },
+  bots: []
+};
+
 let particles = [];
 
 // Add these after the gameState declaration
@@ -244,8 +260,19 @@ socket.on("update", (state) => {
   
   // Process only the most recent update if we have too many
   if (pendingUpdates.length > MAX_PENDING_UPDATES) {
-    gameState = pendingUpdates.pop();
+    const update = pendingUpdates.pop();
     pendingUpdates = [];
+    
+    // Update state while preserving the structure
+    gameState.players = update.players;
+    gameState.bots = update.bots;
+    
+    // Update bullet pool while preserving the getActiveBullets method
+    if (update.bullets && update.bullets.pool) {
+      gameState.bullets.pool = update.bullets.pool;
+    } else if (Array.isArray(update.bullets)) {
+      gameState.bullets.pool = update.bullets;
+    }
   }
 });
 
@@ -428,7 +455,8 @@ function draw() {
   }
 
   // Draw bullets with minimal effects - only draw visible bullets
-  gameState.bullets.forEach((b) => {
+  const activeBullets = gameState.bullets.getActiveBullets();
+  activeBullets.forEach((b) => {
     // Skip bullets that are off-screen (with a margin)
     if (b.x < -10 || b.x > canvas.width + 10 || b.y < -10 || b.y > canvas.height + 10) return;
     
@@ -564,25 +592,27 @@ socket.on("position-correction", (pos) => {
 
 // Process pending game state updates in the game loop
 function processUpdates() {
-  // Apply any position correction in progress
-  if (localPlayer.correctionTimeRemaining > 0) {
-    const factor = 0.15; // Fixed lower factor for smoother corrections
-    localPlayer.x += (localPlayer.targetX - localPlayer.x) * factor;
-    localPlayer.y += (localPlayer.targetY - localPlayer.y) * factor;
-    localPlayer.correctionTimeRemaining--;
-  }
-  
   if (pendingUpdates.length === 0) return;
   
   // Get the most recent update
-  gameState = pendingUpdates.pop();
+  const update = pendingUpdates.pop();
   pendingUpdates = [];
   
+  // Update players and bots
+  gameState.players = update.players;
+  gameState.bots = update.bots;
+  
+  // Update bullet pool while preserving the getActiveBullets method
+  if (update.bullets && update.bullets.pool) {
+    gameState.bullets.pool = update.bullets.pool;
+  } else if (Array.isArray(update.bullets)) {
+    // Handle case where bullets might be sent as a simple array
+    gameState.bullets.pool = update.bullets;
+  }
+  
+  // Update local player position if needed
   if (gameState.players[socket.id]) {
     const serverPlayer = gameState.players[socket.id];
-    
-    // Always update scoreboard when we get new game state
-    scoreboardNeedsUpdate = true;
     
     // Store the server position locally to use for bullet spawning
     serverPlayer.clientX = serverPlayer.x;
@@ -593,9 +623,9 @@ function processUpdates() {
     const dy = serverPlayer.y - localPlayer.y;
     const distanceSquared = dx * dx + dy * dy;
     
-    // Use gentler lerping with diminishing adjustments to avoid jankiness
+    // Use gentler lerping with diminishing adjustments
     if (distanceSquared > 6400) { // Large correction for extreme differences
-      localPlayer.x += dx * 0.3; // Reduced from instant to 30% correction
+      localPlayer.x += dx * 0.3;
       localPlayer.y += dy * 0.3;
     } else if (distanceSquared > 1600) {
       localPlayer.x += dx * 0.15;

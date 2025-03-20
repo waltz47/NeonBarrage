@@ -1,6 +1,8 @@
 // Server-side pickup system for Neon Barrage
 // Handles spawning, collecting, and applying effects of pickups
 
+const { profiler } = require('./profiler');
+
 // Pickup types
 const PICKUP_TYPES = {
   SHIELD: 'SHIELD',
@@ -48,18 +50,22 @@ class PickupSystem {
   
   // Try to spawn a pickup when a bot is destroyed
   trySpawnPickup(position) {
-    console.log("⭐ ATTEMPTING TO SPAWN PICKUP AT:", position);
-    console.log("PICKUP_SPAWN_CHANCE:", PICKUP_SPAWN_CHANCE);
+    profiler.startProfile('pickup-spawn');
+    // console.log("⭐ ATTEMPTING TO SPAWN PICKUP AT:", position);
+    // console.log("PICKUP_SPAWN_CHANCE:", PICKUP_SPAWN_CHANCE);
     const shouldSpawn = Math.random() < PICKUP_SPAWN_CHANCE;
-    console.log("Random roll result:", shouldSpawn);
+    // console.log("Random roll result:", shouldSpawn);
     
+    let result = false;
     if (shouldSpawn) {
       const pickup = this.spawnPickup(position);
-      console.log("✅ PICKUP SPAWNED SUCCESSFULLY:", pickup);
-      return true;
+      // console.log("✅ PICKUP SPAWNED SUCCESSFULLY:", pickup);
+      result = true;
+    } else {
+      // console.log("❌ PICKUP SPAWN FAILED - Random check failed");
     }
-    console.log("❌ PICKUP SPAWN FAILED - Random check failed");
-    return false;
+    profiler.endProfile('pickup-spawn');
+    return result;
   }
   
   // Spawn a pickup at the given position
@@ -67,7 +73,7 @@ class PickupSystem {
     // Randomly select pickup type
     const pickupTypes = Object.values(PICKUP_TYPES);
     const type = pickupTypes[Math.floor(Math.random() * pickupTypes.length)];
-    console.log("Selected pickup type:", type);
+    // console.log("Selected pickup type:", type);
     
     // Create pickup with unique ID
     const pickup = {
@@ -80,7 +86,7 @@ class PickupSystem {
     
     // Add to pickups array
     this.pickups.push(pickup);
-    console.log("Total pickups in system:", this.pickups.length);
+    // console.log("Total pickups in system:", this.pickups.length);
     
     // Set despawn timer
     this.despawnTimers[pickup.id] = setTimeout(() => {
@@ -88,7 +94,7 @@ class PickupSystem {
     }, PICKUP_DESPAWN_TIME);
     
     // Broadcast to clients
-    console.log("📢 EMITTING PICKUP_SPAWNED EVENT:", pickup);
+    // console.log("📢 EMITTING PICKUP_SPAWNED EVENT:", pickup);
     this.io.emit('pickupSpawned', pickup);
     
     return pickup;
@@ -242,6 +248,7 @@ class PickupSystem {
   
   // Process auto-shooter for all players
   processAutoShooters() {
+    profiler.startProfile('pickup-auto-shooter');
     const now = Date.now();
     
     Object.entries(this.playerEffects).forEach(([playerId, effects]) => {
@@ -276,15 +283,15 @@ class PickupSystem {
               closestBot.x - player.x
             );
             
-            // Create bullet
-            this.gameState.bullets.push({
-              x: player.x,
-              y: player.y,
-              angle: angle,
-              color: '#ffea00', // Yellow for auto-shooter bullets
-              owner: playerId,
-              fromAutoShooter: true
-            });
+            // Create bullet using bullet pool
+            const bullet = this.gameState.bullets.obtain();
+            bullet.x = player.x;
+            bullet.y = player.y;
+            bullet.angle = angle;
+            bullet.color = '#ffea00'; // Yellow for auto-shooter bullets
+            bullet.owner = playerId;
+            bullet.fromAutoShooter = true;
+            bullet.speed = AUTO_SHOOTER_SPEED;
             
             // Update last shot time
             autoShooter.lastShot = now;
@@ -301,15 +308,18 @@ class PickupSystem {
         }
       }
     });
+    profiler.endProfile('pickup-auto-shooter');
   }
   
   // Update function called each game tick
   update() {
+    profiler.startProfile('pickup-system-update');
     // Process auto-shooters
     this.processAutoShooters();
     
     // Check for any collisions
     this.checkCollisions();
+    profiler.endProfile('pickup-system-update');
   }
   
   // Check for collisions between players and pickups

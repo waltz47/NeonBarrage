@@ -2,6 +2,7 @@ const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
 const { PickupSystem } = require("./pickup-server");
+const { profiler } = require("./profiler");
 
 const app = express();
 const server = http.createServer(app);
@@ -9,9 +10,50 @@ const io = new Server(server);
 
 app.use(express.static("public"));
 
+// Add bullet pool at the top with other constants
+class BulletPool {
+  constructor(initialSize = 1000) {
+    this.pool = new Array(initialSize).fill(null).map(() => ({
+      x: 0, y: 0, angle: 0, color: '', owner: null, speed: 0,
+      active: false, fromAutoShooter: false
+    }));
+    this.activeCount = 0;
+  }
+
+  obtain() {
+    // First try to find an inactive bullet
+    for (let i = 0; i < this.pool.length; i++) {
+      if (!this.pool[i].active) {
+        this.pool[i].active = true;
+        this.activeCount++;
+        return this.pool[i];
+      }
+    }
+    
+    // If no inactive bullets, expand the pool
+    const newBullet = { x: 0, y: 0, angle: 0, color: '', owner: null, speed: 0, active: true, fromAutoShooter: false };
+    this.pool.push(newBullet);
+    this.activeCount++;
+    return newBullet;
+  }
+
+  release(bullet) {
+    bullet.active = false;
+    this.activeCount--;
+  }
+
+  getActiveBullets() {
+    return this.pool.filter(b => b.active);
+  }
+}
+
+// Initialize bullet pool
+const bulletPool = new BulletPool();
+
+// Replace gameState.bullets array with bullet pool
 const gameState = {
   players: {},
-  bullets: [],
+  bullets: bulletPool,
   bots: [],
   frameCount: 0
 };
@@ -224,27 +266,41 @@ function adjustDifficulty() {
   );
 }
 
+// Modify updateGame function to use bullet pool and batch processing
 function updateGame() {
   const now = Date.now();
 
-  // Move bullets and clean up
+  // Profile bullet collisions
+  profiler.startProfile('bullet-collisions');
+  
+  // Get active bullets
+  const activeBullets = bulletPool.getActiveBullets();
   const grid = {};
   
-  // Only rebuild grid every frame (spatial partitioning)
-  for (let i = 0; i < gameState.bullets.length; i++) {
-    const bullet = gameState.bullets[i];
+  // Process bullets in batches of 100
+  const BATCH_SIZE = 100;
+  const totalBatches = Math.ceil(activeBullets.length / BATCH_SIZE);
+  
+  // Only process one batch per frame, rotating through all batches
+  const currentBatch = gameState.frameCount % totalBatches;
+  const start = currentBatch * BATCH_SIZE;
+  const end = Math.min(start + BATCH_SIZE, activeBullets.length);
+  
+  // Build grid for current batch
+  for (let i = start; i < end; i++) {
+    const bullet = activeBullets[i];
     const key = getGridKey(bullet.x, bullet.y);
     if (!grid[key]) grid[key] = [];
     grid[key].push({ bullet, index: i });
   }
 
-  // Process bullets in batches to improve performance
-  for (let i = gameState.bullets.length - 1; i >= 0; i--) {
-    const bullet = gameState.bullets[i];
-    const speed = bullet.speed || BULLET_SPEED;
+  // Process current batch of bullets
+  for (let i = start; i < end; i++) {
+    const bullet = activeBullets[i];
+    const bulletSpeed = bullet.speed || BULLET_SPEED;
 
     // Only apply homing logic for player bullets and limit its frequency
-    if (gameState.players[bullet.owner] && i % 3 === 0) { // Only process 1/3 of player bullets for homing per frame
+    if (gameState.players[bullet.owner] && i % 3 === 0) {
       const target = findNearestTarget(bullet, grid);
       
       if (target) {
@@ -262,19 +318,21 @@ function updateGame() {
     }
 
     // Move bullet
-    bullet.x += Math.cos(bullet.angle) * speed;
-    bullet.y += Math.sin(bullet.angle) * speed;
+    bullet.x += Math.cos(bullet.angle) * bulletSpeed;
+    bullet.y += Math.sin(bullet.angle) * bulletSpeed;
 
-    // Remove if out of bounds (using simple bounds check)
+    // Remove if out of bounds
     if (bullet.x < 0 || bullet.x > gameWidth || 
         bullet.y < 0 || bullet.y > gameHeight) {
-      gameState.bullets.splice(i, 1);
+      bulletPool.release(bullet);
     }
   }
+  profiler.endProfile('bullet-collisions');
 
+  // Profile AI movement/behavior
+  profiler.startProfile('ai-behavior');
   // Move bots, shoot, and clean up out-of-bounds
-  // Process only a subset of bots per frame in high-load scenarios
-  const botsToProcess = Math.min(gameState.bots.length, 10); // Process at most 10 bots per frame
+  const botsToProcess = Math.min(gameState.bots.length, 10);
   const processInterval = Math.max(1, Math.floor(gameState.bots.length / botsToProcess));
   
   for (let i = gameState.bots.length - 1; i >= 0; i -= processInterval) {
@@ -341,13 +399,13 @@ function updateGame() {
       if (isOnScreen && Math.abs(angleDiff) < SHOOT_ANGLE && 
           now - bot.lastShot > BOT_FIRE_COOLDOWN && 
           Math.random() < BOT_FIRE_RATE) {
-        gameState.bullets.push({
-          x: bot.x,
-          y: bot.y,
-          angle: bot.angle,
-          color: "#FF0000",
-          owner: bot.id,
-        });
+        const bullet = bulletPool.obtain();
+        bullet.x = bot.x;
+        bullet.y = bot.y;
+        bullet.angle = bot.angle;
+        bullet.color = "#FF0000";
+        bullet.owner = bot.id;
+        bullet.speed = BULLET_SPEED;
         bot.lastShot = now;
       }
     }
@@ -358,13 +416,14 @@ function updateGame() {
       gameState.bots.splice(i, 1);
     }
   }
+  profiler.endProfile('ai-behavior');
 
-  // Bullet vs Bot collision - use spatial grid to optimize
-  for (let i = gameState.bullets.length - 1; i >= 0; i--) {
-    const bullet = gameState.bullets[i];
-    // Skip bot bullets hitting bots
-    if (!gameState.players[bullet.owner]) continue;
-    
+  // Profile bullet vs bot collision
+  profiler.startProfile('bullet-bot-collisions');
+  const playerBullets = bulletPool.getActiveBullets().filter(b => gameState.players[b.owner]);
+  
+  for (let i = playerBullets.length - 1; i >= 0; i--) {
+    const bullet = playerBullets[i];
     const gridX = Math.floor(bullet.x / GRID_SIZE);
     const gridY = Math.floor(bullet.y / GRID_SIZE);
     
@@ -377,7 +436,7 @@ function updateGame() {
       
       if (distSquared < 400) { // 20^2
         gameState.bots.splice(j, 1);
-        gameState.bullets.splice(i, 1);
+        bulletPool.release(bullet);
         
         // Add score for the player who killed the bot
         if (gameState.players[bullet.owner]) {
@@ -398,14 +457,16 @@ function updateGame() {
       }
     }
   }
+  profiler.endProfile('bullet-bot-collisions');
 
-  // Bullet vs Player collision with invulnerability - optimize using spatial grid
+  // Profile bullet vs player collision
+  profiler.startProfile('bullet-player-collisions');
   const activePlayers = Object.entries(gameState.players)
     .filter(([_, player]) => !(player.paused || (player.invulnerableUntil && now < player.invulnerableUntil)))
     .map(([id, player]) => ({ id, player }));
 
   // Only check collisions for AI bullets (not player bullets)
-  const aiBullets = gameState.bullets.filter(b => !gameState.players[b.owner]);
+  const aiBullets = bulletPool.getActiveBullets().filter(b => !gameState.players[b.owner]);
   
   for (const { id, player } of activePlayers) {
     for (let i = aiBullets.length - 1; i >= 0; i--) {
@@ -424,79 +485,18 @@ function updateGame() {
         delete gameState.players[id];
         io.to(id).emit("dead");
         
-        // Find and remove the bullet in the main bullet array
-        const bulletIndex = gameState.bullets.indexOf(bullet);
-        if (bulletIndex !== -1) {
-          gameState.bullets.splice(bulletIndex, 1);
-        }
+        // Release the bullet
+        bulletPool.release(bullet);
+        
         // Also remove from our temporary array
         aiBullets.splice(i, 1);
       }
     }
   }
+  profiler.endProfile('bullet-player-collisions');
 
-  // Bullet vs Bullet collision - use the already built spatial grid
-  // Separate player and AI bullets for faster collision detection
-  const playerBullets = [];
-  
-  for (let i = 0; i < gameState.bullets.length; i++) {
-    const bullet = gameState.bullets[i];
-    if (gameState.players[bullet.owner]) {
-      playerBullets.push({ bullet, index: i });
-    }
-  }
-
-  // For high bullet counts, process only a subset per frame
-  const bulletsToProcess = Math.min(playerBullets.length, 20);
-  const bulletInterval = Math.max(1, Math.floor(playerBullets.length / bulletsToProcess));
-  
-  for (let i = 0; i < playerBullets.length; i += bulletInterval) {
-    const pBullet = playerBullets[i].bullet;
-    const pIndex = playerBullets[i].index;
-    const gridX = Math.floor(pBullet.x / GRID_SIZE);
-    const gridY = Math.floor(pBullet.y / GRID_SIZE);
-
-    // Check current and adjacent grid cells
-    let collided = false;
-    gridCheck: for (let dx = -1; dx <= 1; dx++) {
-      for (let dy = -1; dy <= 1; dy++) {
-        const key = `${gridX + dx},${gridY + dy}`;
-        if (!grid[key]) continue;
-        
-        for (const { bullet: aBullet, index: aIndex } of grid[key]) {
-          if (gameState.players[aBullet.owner]) continue; // Skip if both are player bullets
-          if (aBullet === pBullet) continue; // Skip self
-          
-          const dx = pBullet.x - aBullet.x;
-          const dy = pBullet.y - aBullet.y;
-          const distSquared = dx * dx + dy * dy;
-          
-          if (distSquared < 144) { // 12^2
-            // Remove bullets in correct order to prevent index errors
-            const maxIdx = Math.max(pIndex, aIndex);
-            const minIdx = Math.min(pIndex, aIndex);
-            
-            if (maxIdx < gameState.bullets.length && minIdx < gameState.bullets.length) {
-              gameState.bullets.splice(maxIdx, 1);
-              gameState.bullets.splice(minIdx, 1);
-              
-              // Simple explosion effect with no color variations
-              io.emit("explosion", { 
-                x: pBullet.x, 
-                y: pBullet.y,
-                color: `255, 255, 255`, // Simple white
-                size: 15
-              });
-              collided = true;
-              break gridCheck; // Bullet destroyed, exit nested loops
-            }
-          }
-        }
-      }
-    }
-  }
-
-  // Spawn bots with limit (only check every 30 frames to reduce CPU load)
+  // Profile AI spawning
+  profiler.startProfile('ai-spawning');
   if (gameState.frameCount % 30 === 0) {
     if (gameState.bots.length < MAX_BOTS) {
       const currentDifficulty = adjustDifficulty();
@@ -507,26 +507,26 @@ function updateGame() {
 
       if (gameState.bots.length < currentMaxBots) {
         const players = Object.values(gameState.players);
-        // Try to spawn a bot if there are players
         if (players.length > 0) {
           const avgUpgradeLevel = players.reduce((sum, p) => sum + p.upgrade, 0) / players.length;
-          // Fixed spawn rate calculation
           const spawnChance = BOT_SPAWN_RATE * (1 + avgUpgradeLevel * BOT_SPAWN_RATE_INCREASE);
           
           if (Math.random() < spawnChance) {
             const bot = spawnBot();
             if (bot) {
               gameState.bots.push(bot);
-              console.log("Bot spawned", bot.id);
+              // console.log("Bot spawned", bot.id);
             }
           }
         }
       }
     }
   }
+  profiler.endProfile('ai-spawning');
 
-  // Increment frame counter
+  // Increment frame counter and advance profiler frame
   gameState.frameCount = (gameState.frameCount || 0) + 1;
+  profiler.nextFrame();
 
   // Only send updates at 30fps to reduce network traffic
   if (gameState.frameCount % 2 === 0) {
@@ -536,6 +536,11 @@ function updateGame() {
   // Update pickup system each frame
   pickupSystem.update();
 }
+
+// Add profiling output every 5 seconds
+setInterval(() => {
+  console.log(profiler.formatMetrics());
+}, 5000);
 
 // Change server update rate to 60fps, but send updates at 30fps
 setInterval(updateGame, 1000 / 60);
@@ -636,23 +641,19 @@ io.on("connection", (socket) => {
     const cooldown = player.upgrade >= 1 ? UPGRADED_SHOOT_COOLDOWN : PLAYER_SHOOT_COOLDOWN;
     if (now - player.lastShot < cooldown) return;
 
-    // Update player's upgrade based on score
     player.upgrade = Math.floor(player.score / 50);
 
-    // Get the position to spawn bullets - prefer client position if provided
     let shootX = player.x;
     let shootY = player.y;
     let shootAngle = player.angle;
     
-    // Use client data if available and within reasonable bounds
     if (data && typeof data === 'object') {
       if (data.clientX !== undefined && data.clientY !== undefined) {
         const dx = data.clientX - player.x;
         const dy = data.clientY - player.y;
         const distSquared = dx * dx + dy * dy;
         
-        // Only use client position if it's reasonably close to server position
-        if (distSquared < 2500) { // 50^2
+        if (distSquared < 2500) {
           shootX = data.clientX;
           shootY = data.clientY;
         }
@@ -663,29 +664,26 @@ io.on("connection", (socket) => {
       }
     }
 
-    const createBullet = (angleOffset = 0) => ({
-      x: shootX,
-      y: shootY,
-      angle: shootAngle + angleOffset,
-      color: player.color,
-      owner: player.id,
-      speed: PLAYER_BULLET_SPEED
-    });
+    const createBullet = (angleOffset = 0) => {
+      const bullet = bulletPool.obtain();
+      bullet.x = shootX;
+      bullet.y = shootY;
+      bullet.angle = shootAngle + angleOffset;
+      bullet.color = player.color;
+      bullet.owner = player.id;
+      bullet.speed = PLAYER_BULLET_SPEED;
+      return bullet;
+    };
 
-    // Add bullets based on upgrade level
-    if (player.upgrade >= 2) { // 100+ kills: triple shot
-      gameState.bullets.push(
-        createBullet(-0.2),
-        createBullet(),
-        createBullet(0.2)
-      );
-    } else if (player.upgrade >= 1) { // 50+ kills: twin shot
-      gameState.bullets.push(
-        createBullet(-0.1),
-        createBullet(0.1)
-      );
-    } else { // Single shot
-      gameState.bullets.push(createBullet());
+    if (player.upgrade >= 2) {
+      createBullet(-0.2);
+      createBullet();
+      createBullet(0.2);
+    } else if (player.upgrade >= 1) {
+      createBullet(-0.1);
+      createBullet(0.1);
+    } else {
+      createBullet();
     }
 
     player.lastShot = now;
@@ -741,14 +739,14 @@ io.on("connection", (socket) => {
 
   // Special debug commands
   socket.on("spawnTestPickup", (position) => {
-    console.log("🧪 DEBUG: Manual test pickup spawn requested", position);
+    // console.log("🧪 DEBUG: Manual test pickup spawn requested", position);
     // Force spawn a pickup (bypass random check)
     if (!position || typeof position.x === 'undefined') {
       // Default to center if no position provided
       position = { x: gameWidth / 2, y: gameHeight / 2 };
     }
     const pickup = pickupSystem.spawnPickup(position);
-    console.log("🧪 DEBUG: Test pickup spawned", pickup);
+    // console.log("🧪 DEBUG: Test pickup spawned", pickup);
   });
 });
 

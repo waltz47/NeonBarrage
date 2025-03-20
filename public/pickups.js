@@ -228,8 +228,8 @@ document.addEventListener('keydown', (e) => {
 // Request pickup from server when an enemy is destroyed
 socket.on("botDestroyed", (position) => {
   // Server already handles the random chance of spawning
-  console.log("%c💥 BOT DESTROYED EVENT RECEIVED", "background: red; color: white");
-  console.log("Bot destroyed at:", position);
+  // console.log("%c💥 BOT DESTROYED EVENT RECEIVED", "background: red; color: white");
+  // console.log("Bot destroyed at:", position);
   
   // Display a visual indicator at the destruction location to confirm the event is firing
   const explosionParticles = 10;
@@ -251,9 +251,9 @@ socket.on("botDestroyed", (position) => {
 
 // Handle new pickup spawned by server
 socket.on("pickupSpawned", (pickup) => {
-  console.log("%c⚡ PICKUP SPAWNED EVENT RECEIVED", "background: yellow; color: black");
-  console.log("Pickup data from server:", pickup);
-  console.log("Current pickup array length:", pickups.length);
+  // console.log("%c⚡ PICKUP SPAWNED EVENT RECEIVED", "background: yellow; color: black");
+  // console.log("Pickup data from server:", pickup);
+  // console.log("Current pickup array length:", pickups.length);
   
   if (!pickup || pickup.id === undefined) {
     console.error("❌ Invalid pickup data received:", pickup);
@@ -436,12 +436,12 @@ function showPickupNotification(type) {
 function drawPickups(ctx) {
   const currentTime = Date.now();
   
-  console.log("drawPickups called with pickups:", pickups.length);
+  // console.log("drawPickups called with pickups:", pickups.length);
   
   // Don't show the test pickup if there's already a real pickup in the array
   if (pickups.length === 0) {
     // Log but don't create the test pickup if there's already a real pickup
-    console.warn("⚠️ NO PICKUPS FOUND - Pickup system may not be receiving events from server");
+    // console.warn("⚠️ NO PICKUPS FOUND - Pickup system may not be receiving events from server");
     
     // Only for debugging - comment out for production
     // const testPickup = {
@@ -848,12 +848,12 @@ function checkPickupCollisions() {
     
     // Log collision distances rarely to help debug
     if (Math.random() < 0.01) {
-      console.log(`Distance to pickup ${pickup.id}: ${distance.toFixed(0)}, threshold: ${collisionRadius + pickupRadius}`);
+      // console.log(`Distance to pickup ${pickup.id}: ${distance.toFixed(0)}, threshold: ${collisionRadius + pickupRadius}`);
     }
     
     if (distance < collisionRadius + pickupRadius) {
       console.log(`💥 PICKUP COLLECTED: ${pickup.id}, type: ${pickup.type}`);
-      console.log(`Distance: ${distance.toFixed(0)}, Threshold: ${collisionRadius + pickupRadius}`);
+      // console.log(`Distance: ${distance.toFixed(0)}, Threshold: ${collisionRadius + pickupRadius}`);
       
       // Send pickup collection to server
       socket.emit("collectPickup", {
